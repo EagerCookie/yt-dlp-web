@@ -1,0 +1,20 @@
+version: '3.9'
+
+services:
+  yt-dlp-web:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - downloads:/downloads
+      - db_data:/data
+    environment:
+      - DOWNLOAD_DIR=/downloads
+      - DB_PATH=/data/downloads.db
+      - MAX_CONCURRENT_DOWNLOADS=3
+      - CLEANUP_AFTER_HOURS=24
+    restart: unless-stopped
+
+volumes:
+  downloads:
+  db_data:
