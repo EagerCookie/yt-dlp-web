@@ -190,6 +190,12 @@ def run_download(job_id: str, url: str, format_preset: str,
 
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+    # Lower process priority so FFmpeg doesn't starve other tasks
+    try:
+        os.nice(10)  # lower priority (higher nice = lower priority)
+    except (OSError, AttributeError):
+        pass  # Windows or permission error, skip
+
     params: dict = {
         'quiet': True,
         'no_warnings': False,
@@ -202,6 +208,8 @@ def run_download(job_id: str, url: str, format_preset: str,
         'postprocessors': list(preset.get('postprocessors', [])),
         'overwrites': False,
         'ignoreerrors': False,
+        # Limit FFmpeg to 1 thread to avoid CPU overload
+        'postprocessor_args': {'ffmpeg': ['-threads', '1']},
     }
     if preset.get('merge_output_format'):
         params['merge_output_format'] = preset['merge_output_format']

@@ -43,6 +43,12 @@ header h1 {
     font-weight: 600;
 }
 
+.version {
+    color: var(--text-muted);
+    font-size: 12px;
+    margin-top: 4px;
+}
+
 /* Cards */
 
 .card {

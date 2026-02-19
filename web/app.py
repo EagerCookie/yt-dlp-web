@@ -201,6 +201,12 @@ async def index():
     return FileResponse(os.path.join(static_dir, 'index.html'))
 
 
+@app.get('/api/version')
+async def get_version():
+    import yt_dlp.version
+    return {'yt_dlp_version': yt_dlp.version.__version__}
+
+
 @app.get('/api/info')
 async def get_info(url: str = Query(..., description='Video URL')):
     loop = asyncio.get_event_loop()

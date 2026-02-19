@@ -369,7 +369,20 @@ async function deleteJob(jobId) {
 
 // --- Init ---
 
+async function loadVersion() {
+    try {
+        const resp = await fetch('/api/version');
+        if (resp.ok) {
+            const data = await resp.json();
+            $('version-info').textContent = `yt-dlp ${data.yt_dlp_version}`;
+        }
+    } catch (e) {
+        console.error('Failed to load version', e);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+    loadVersion();
     loadHistory();
 
     // Enter key triggers fetch
