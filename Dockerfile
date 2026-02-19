@@ -6,21 +6,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Install web dependencies
+# Install web dependencies + yt-dlp from PyPI (not from source)
 COPY web/requirements.txt ./requirements-web.txt
-RUN pip install --no-cache-dir -r requirements-web.txt
+RUN pip install --no-cache-dir -r requirements-web.txt yt-dlp
 
-# Install yt-dlp from source
-COPY pyproject.toml README.md ./
-COPY yt_dlp/ ./yt_dlp/
-RUN pip install --no-cache-dir -e .
-
-# Copy web application
+# Copy web application only (yt-dlp source no longer needed)
 COPY web/ ./web/
 
 # Create data directories
 RUN mkdir -p /downloads /data
 
+# Entrypoint handles optional auto-update of yt-dlp before starting the server
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 EXPOSE 8000
 
-CMD ["uvicorn", "web.app:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["/entrypoint.sh"]

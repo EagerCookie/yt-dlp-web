@@ -13,6 +13,7 @@ services:
       - DB_PATH=/data/downloads.db
       - MAX_CONCURRENT_DOWNLOADS=3
       - CLEANUP_AFTER_HOURS=24
+      - UPDATE_YTDLP_ON_START=true
     restart: unless-stopped
 
 volumes:
