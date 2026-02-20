@@ -7,6 +7,8 @@ const state = {
     activeJobs: {},   // jobId -> { ws, data }
     historyOffset: 0,
     historyLimit: 50,
+    extractors: [],   // [{name, description}, ...]
+    panelOpen: false,
 };
 
 // --- Helpers ---
@@ -74,6 +76,98 @@ function setLoading(btn, loading) {
 function wsUrl(path) {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${location.host}${path}`;
+}
+
+// --- Side Panel: Extractors ---
+
+async function loadExtractors() {
+    try {
+        const resp = await fetch('/api/extractors');
+        if (!resp.ok) return;
+        state.extractors = await resp.json();
+        $('extractor-count').textContent = state.extractors.length;
+        renderExtractors('');
+    } catch (e) {
+        console.error('Failed to load extractors', e);
+    }
+}
+
+function renderExtractors(filter) {
+    const list = $('extractor-list');
+    list.innerHTML = '';
+
+    const q = (filter || '').toLowerCase().trim();
+    const items = q
+        ? state.extractors.filter(e =>
+            e.name.toLowerCase().includes(q) ||
+            (e.description && e.description.toLowerCase().includes(q)))
+        : state.extractors;
+
+    for (const ext of items) {
+        const li = document.createElement('li');
+        li.className = 'extractor-item';
+        li.textContent = ext.name;
+        if (ext.description && ext.description !== ext.name) {
+            const desc = document.createElement('span');
+            desc.className = 'ext-desc';
+            desc.textContent = ext.description;
+            li.appendChild(desc);
+        }
+        list.appendChild(li);
+    }
+}
+
+function toggleSidePanel() {
+    const panel = $('side-panel');
+    state.panelOpen = !state.panelOpen;
+    panel.classList.toggle('collapsed', !state.panelOpen);
+}
+
+// --- URL Support Check ---
+
+let _urlCheckTimer = null;
+
+function checkUrlSupport(url) {
+    const warning = $('url-warning');
+    if (!url || !state.extractors.length) {
+        warning.hidden = true;
+        return;
+    }
+
+    // Try to extract hostname from URL
+    let hostname = '';
+    try {
+        const parsed = new URL(url);
+        hostname = parsed.hostname.replace(/^www\./, '').replace(/^m\./, '');
+    } catch {
+        // Not a valid URL yet — hide warning
+        warning.hidden = true;
+        return;
+    }
+
+    if (!hostname) {
+        warning.hidden = true;
+        return;
+    }
+
+    // Check if any extractor name/description matches the hostname
+    const hl = hostname.toLowerCase();
+    // Extract domain name without TLD for matching (e.g. "youtube" from "youtube.com")
+    const domainParts = hl.split('.');
+    const domainName = domainParts.length >= 2 ? domainParts[domainParts.length - 2] : hl;
+
+    const found = state.extractors.some(e => {
+        const name = e.name.toLowerCase();
+        const desc = (e.description || '').toLowerCase();
+        return name.includes(domainName) || desc.includes(hl) || desc.includes(domainName);
+    });
+
+    warning.hidden = found;
+}
+
+function onUrlInput(value) {
+    clearTimeout(_urlCheckTimer);
+    _urlCheckTimer = setTimeout(() => checkUrlSupport(value.trim()), 300);
 }
 
 // --- Fetch Info ---
@@ -384,9 +478,14 @@ async function loadVersion() {
 document.addEventListener('DOMContentLoaded', () => {
     loadVersion();
     loadHistory();
+    loadExtractors();
 
-    // Enter key triggers fetch
-    $('url-input').addEventListener('keydown', (e) => {
+    // URL input: Enter key triggers fetch, typing checks support
+    const urlInput = $('url-input');
+    urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') fetchInfo();
+    });
+    urlInput.addEventListener('input', (e) => {
+        onUrlInput(e.target.value);
     });
 });

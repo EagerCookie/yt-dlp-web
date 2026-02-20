@@ -207,6 +207,28 @@ async def get_version():
     return {'yt_dlp_version': yt_dlp.version.__version__}
 
 
+_extractors_cache: list[dict] | None = None
+
+
+@app.get('/api/extractors')
+async def get_extractors():
+    global _extractors_cache
+    if _extractors_cache is None:
+        from yt_dlp.extractor import list_extractor_classes
+        result = []
+        seen: set[str] = set()
+        for ie in list_extractor_classes():
+            if not ie.working() or ie.IE_DESC is False:
+                continue
+            name = ie.IE_NAME
+            if name in seen or name == 'generic':
+                continue
+            seen.add(name)
+            result.append({'name': name, 'description': ie.IE_DESC or ''})
+        _extractors_cache = result
+    return _extractors_cache
+
+
 @app.get('/api/info')
 async def get_info(url: str = Query(..., description='Video URL')):
     loop = asyncio.get_event_loop()

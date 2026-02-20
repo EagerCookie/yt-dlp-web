@@ -7,71 +7,93 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>yt-dlp Web</h1>
-            <p class="version" id="version-info"></p>
-        </header>
-
-        <!-- URL Input -->
-        <section class="card" id="input-section">
-            <div class="url-row">
-                <input type="text" id="url-input" placeholder="Paste video URL here..." autofocus>
-                <button id="fetch-btn" onclick="fetchInfo()">Fetch Info</button>
+    <div class="page-layout">
+        <!-- Side Panel -->
+        <aside class="side-panel collapsed" id="side-panel">
+            <button class="side-panel-toggle" onclick="toggleSidePanel()">
+                <span class="toggle-icon" id="toggle-icon">&#9654;</span>
+                <span>Supported Services</span>
+                <span class="extractor-count" id="extractor-count"></span>
+            </button>
+            <div class="side-panel-body" id="side-panel-body">
+                <input type="text" class="extractor-search" id="extractor-search"
+                       placeholder="Search services..." oninput="renderExtractors(this.value)">
+                <ul class="extractor-list" id="extractor-list"></ul>
             </div>
-            <div id="error-msg" class="error-msg" hidden></div>
-        </section>
+        </aside>
 
-        <!-- Preview -->
-        <section class="card" id="preview-section" hidden>
-            <div class="preview">
-                <img id="preview-thumb" src="" alt="Thumbnail">
-                <div class="preview-info">
-                    <h2 id="preview-title"></h2>
-                    <p id="preview-uploader"></p>
-                    <p id="preview-duration"></p>
-                    <div id="playlist-warning" class="warning" hidden>
-                        This is a playlist. All items will be downloaded.
+        <!-- Main Content -->
+        <div class="main-content">
+            <div class="container">
+                <header>
+                    <h1>yt-dlp Web</h1>
+                    <p class="version" id="version-info"></p>
+                </header>
+
+                <!-- URL Input -->
+                <section class="card" id="input-section">
+                    <div class="url-row">
+                        <input type="text" id="url-input" placeholder="Paste video URL here..." autofocus>
+                        <button id="fetch-btn" onclick="fetchInfo()">Fetch Info</button>
                     </div>
-                </div>
+                    <div id="url-warning" class="url-warning" hidden>
+                        This source may not be directly supported. Download may still work via generic extractor.
+                    </div>
+                    <div id="error-msg" class="error-msg" hidden></div>
+                </section>
+
+                <!-- Preview -->
+                <section class="card" id="preview-section" hidden>
+                    <div class="preview">
+                        <img id="preview-thumb" src="" alt="Thumbnail">
+                        <div class="preview-info">
+                            <h2 id="preview-title"></h2>
+                            <p id="preview-uploader"></p>
+                            <p id="preview-duration"></p>
+                            <div id="playlist-warning" class="warning" hidden>
+                                This is a playlist. All items will be downloaded.
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="format-selector" id="format-selector">
+                        <label class="format-option">
+                            <input type="radio" name="format" value="best_video" checked>
+                            <span>Best Video (MP4) <small class="format-size" data-preset="best_video"></small></span>
+                        </label>
+                        <label class="format-option">
+                            <input type="radio" name="format" value="audio_mp3">
+                            <span>Audio (MP3) <small class="format-size" data-preset="audio_mp3"></small></span>
+                        </label>
+                        <label class="format-option">
+                            <input type="radio" name="format" value="video_720p">
+                            <span>720p <small class="format-size" data-preset="video_720p"></small></span>
+                        </label>
+                        <label class="format-option">
+                            <input type="radio" name="format" value="video_1080p">
+                            <span>1080p <small class="format-size" data-preset="video_1080p"></small></span>
+                        </label>
+                    </div>
+
+                    <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
+                </section>
+
+                <!-- Active Downloads -->
+                <section id="active-section">
+                    <h2>Active Downloads</h2>
+                    <div id="active-list"></div>
+                    <p id="no-active" class="muted">No active downloads</p>
+                </section>
+
+                <!-- History -->
+                <section id="history-section">
+                    <h2>History</h2>
+                    <div id="history-list"></div>
+                    <p id="no-history" class="muted">No downloads yet</p>
+                    <button id="load-more-btn" class="btn-secondary" onclick="loadMoreHistory()" hidden>Load More</button>
+                </section>
             </div>
-
-            <div class="format-selector" id="format-selector">
-                <label class="format-option">
-                    <input type="radio" name="format" value="best_video" checked>
-                    <span>Best Video (MP4) <small class="format-size" data-preset="best_video"></small></span>
-                </label>
-                <label class="format-option">
-                    <input type="radio" name="format" value="audio_mp3">
-                    <span>Audio (MP3) <small class="format-size" data-preset="audio_mp3"></small></span>
-                </label>
-                <label class="format-option">
-                    <input type="radio" name="format" value="video_720p">
-                    <span>720p <small class="format-size" data-preset="video_720p"></small></span>
-                </label>
-                <label class="format-option">
-                    <input type="radio" name="format" value="video_1080p">
-                    <span>1080p <small class="format-size" data-preset="video_1080p"></small></span>
-                </label>
-            </div>
-
-            <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
-        </section>
-
-        <!-- Active Downloads -->
-        <section id="active-section">
-            <h2>Active Downloads</h2>
-            <div id="active-list"></div>
-            <p id="no-active" class="muted">No active downloads</p>
-        </section>
-
-        <!-- History -->
-        <section id="history-section">
-            <h2>History</h2>
-            <div id="history-list"></div>
-            <p id="no-history" class="muted">No downloads yet</p>
-            <button id="load-more-btn" class="btn-secondary" onclick="loadMoreHistory()" hidden>Load More</button>
-        </section>
+        </div>
     </div>
 
     <script src="/static/app.js"></script>
