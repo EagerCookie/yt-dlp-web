@@ -8,9 +8,27 @@ const state = {
     historyOffset: 0,
     historyLimit: 50,
     extractors: [],   // [{name, description}, ...]
-    panelOpen: false,
-    tags: [],              // [{id, name, color}, ...]
+    sidebarOpen: false,
+    tags: [],              // [{id, name, color, count, system}, ...]
     activeTagFilter: null, // tag_id or null for "all"
+    currentView: 'home',   // 'home' | 'library'
+    servicesOpen: false,
+
+    // Library state
+    library: {
+        items: [],
+        offset: 0,
+        limit: 50,
+        search: '',
+        sortBy: 'created_at',
+        sortOrder: 'desc',
+        tagId: null,
+        pinnedOnly: false,
+        formatPreset: null,
+        status: null,
+        activeFilter: 'all', // 'all' | 'pinned' | 'audio_mp3' | 'video'
+        selected: new Set(),
+    },
 };
 
 const TAG_COLORS = [
@@ -102,7 +120,105 @@ function wsUrl(path) {
     return `${proto}//${location.host}${path}`;
 }
 
-// --- Side Panel: Extractors ---
+// ===== SPA Navigation =====
+
+function navigateTo(view) {
+    if (view === state.currentView) return;
+    state.currentView = view;
+
+    $('view-home').hidden = view !== 'home';
+    $('view-library').hidden = view !== 'library';
+
+    // Update nav buttons
+    document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === view);
+    });
+
+    // Update URL
+    const url = view === 'library' ? '/library' : '/';
+    history.pushState({ view }, '', url);
+
+    // Load library data on first visit
+    if (view === 'library' && state.library.items.length === 0) {
+        loadLibrary();
+    }
+}
+
+function initRouter() {
+    const path = location.pathname;
+    if (path === '/library') {
+        state.currentView = 'library';
+        $('view-home').hidden = true;
+        $('view-library').hidden = false;
+        document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === 'library');
+        });
+        loadLibrary();
+    }
+
+    window.addEventListener('popstate', (e) => {
+        const view = e.state?.view || 'home';
+        state.currentView = view;
+        $('view-home').hidden = view !== 'home';
+        $('view-library').hidden = view !== 'library';
+        document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.view === view);
+        });
+        if (view === 'library') loadLibrary();
+    });
+}
+
+// ===== Sidebar =====
+
+function toggleSidebar() {
+    const sidebar = $('sidebar');
+    state.sidebarOpen = !state.sidebarOpen;
+    sidebar.classList.toggle('collapsed', !state.sidebarOpen);
+}
+
+function toggleServicesSection() {
+    state.servicesOpen = !state.servicesOpen;
+    const body = $('services-body');
+    const arrow = $('services-arrow');
+    body.hidden = !state.servicesOpen;
+    arrow.classList.toggle('open', state.servicesOpen);
+}
+
+function renderSidebarTags() {
+    const list = $('sidebar-tag-list');
+    if (!list) return;
+
+    let html = '';
+    for (const t of state.tags) {
+        const active = state.activeTagFilter === t.id ? ' active' : '';
+        html += `<li class="sidebar-tag-item${active}" onclick="sidebarTagClick(${t.id})">
+            <span class="sidebar-tag-dot" style="background:${t.color}"></span>
+            <span class="sidebar-tag-name">${escHtml(t.name)}</span>
+            <span class="sidebar-tag-count">${t.count || 0}</span>
+        </li>`;
+    }
+    list.innerHTML = html;
+}
+
+function sidebarTagClick(tagId) {
+    if (state.activeTagFilter === tagId) {
+        state.activeTagFilter = null;
+    } else {
+        state.activeTagFilter = tagId;
+    }
+    renderSidebarTags();
+    renderTagFilter();
+
+    if (state.currentView === 'home') {
+        loadHistory();
+    }
+    if (state.currentView === 'library') {
+        state.library.tagId = state.activeTagFilter;
+        loadLibrary();
+    }
+}
+
+// ===== Extractors (Services) =====
 
 async function loadExtractors() {
     try {
@@ -141,13 +257,7 @@ function renderExtractors(filter) {
     }
 }
 
-function toggleSidePanel() {
-    const panel = $('side-panel');
-    state.panelOpen = !state.panelOpen;
-    panel.classList.toggle('collapsed', !state.panelOpen);
-}
-
-// --- URL Support Check ---
+// ===== URL Support Check =====
 
 let _urlCheckTimer = null;
 
@@ -190,7 +300,7 @@ function onUrlInput(value) {
     _urlCheckTimer = setTimeout(() => checkUrlSupport(value.trim()), 300);
 }
 
-// --- Fetch Info ---
+// ===== Fetch Info =====
 
 async function fetchInfo() {
     const url = $('url-input').value.trim();
@@ -245,7 +355,7 @@ function renderPreview() {
     $('preview-section').hidden = false;
 }
 
-// --- Start Download ---
+// ===== Start Download =====
 
 async function startDownload() {
     if (!state.url) return;
@@ -276,7 +386,7 @@ async function startDownload() {
     }
 }
 
-// --- Active Jobs UI ---
+// ===== Active Jobs UI =====
 
 function createActiveJob(jobId, info, format) {
     state.activeJobs[jobId] = { data: { status: 'queued' } };
@@ -355,6 +465,7 @@ function updateActiveJob(jobId, msg) {
             }
 
             loadHistory();
+            loadTags(); // Refresh tag counts
         } else if (msg.status === 'cancelled') {
             get('status').textContent = 'cancelled';
             get('progress').textContent = 'Cancelled';
@@ -378,7 +489,7 @@ async function cancelJob(jobId) {
     }
 }
 
-// --- WebSocket ---
+// ===== WebSocket =====
 
 function connectJobWS(jobId) {
     const ws = new WebSocket(wsUrl(`/ws/${jobId}`));
@@ -405,13 +516,15 @@ function connectJobWS(jobId) {
     };
 }
 
-// --- Pin ---
+// ===== Pin =====
 
 async function togglePin(jobId) {
     try {
         const resp = await fetch(`/api/downloads/${jobId}/pin`, { method: 'PATCH' });
         if (!resp.ok) return;
         const data = await resp.json();
+
+        // Update in home history
         const el = $(`hist-${jobId}`);
         if (el) {
             const pinBtn = el.querySelector('.pin-btn');
@@ -421,12 +534,23 @@ async function togglePin(jobId) {
             }
             el.classList.toggle('history-item-pinned', data.pinned);
         }
+
+        // Update in library
+        const libEl = $(`lib-${jobId}`);
+        if (libEl) {
+            const pinBtn = libEl.querySelector('.pin-btn');
+            if (pinBtn) {
+                pinBtn.classList.toggle('pinned', data.pinned);
+                pinBtn.title = data.pinned ? 'Unpin' : 'Pin';
+            }
+            libEl.classList.toggle('pinned', data.pinned);
+        }
     } catch (e) {
         console.error('Failed to toggle pin', e);
     }
 }
 
-// --- Tags ---
+// ===== Tags =====
 
 async function loadTags() {
     try {
@@ -434,6 +558,8 @@ async function loadTags() {
         if (!resp.ok) return;
         state.tags = await resp.json();
         renderTagFilter();
+        renderSidebarTags();
+        renderLibraryTagFilters();
     } catch (e) {
         console.error('Failed to load tags', e);
     }
@@ -462,10 +588,17 @@ function renderTagFilter() {
 function filterByTag(tagId) {
     state.activeTagFilter = tagId;
     renderTagFilter();
+    renderSidebarTags();
     loadHistory();
+
+    // Also update library tag filter
+    if (state.currentView === 'library') {
+        state.library.tagId = tagId;
+        loadLibrary();
+    }
 }
 
-// --- Tag Assignment Popover ---
+// ===== Tag Assignment Popover =====
 
 function openTagAssign(downloadId, anchorEl) {
     closeTagAssign();
@@ -474,8 +607,7 @@ function openTagAssign(downloadId, anchorEl) {
     pop.className = 'tag-assign-popover';
     pop.id = 'tag-assign-popover';
 
-    // Get current tags from the history item's data attributes
-    const histEl = $(`hist-${downloadId}`);
+    const histEl = $(`hist-${downloadId}`) || $(`lib-${downloadId}`);
     const currentTagIds = new Set();
     if (histEl) {
         histEl.querySelectorAll('.tag-chip[data-tag-id]').forEach(chip => {
@@ -497,8 +629,7 @@ function openTagAssign(downloadId, anchorEl) {
     }
     pop.innerHTML = html;
 
-    // Position relative to the h-tags container
-    const tagsContainer = anchorEl.closest('.h-tags');
+    const tagsContainer = anchorEl.closest('.h-tags') || anchorEl.closest('.lib-tags');
     if (tagsContainer) {
         tagsContainer.style.position = 'relative';
         tagsContainer.appendChild(pop);
@@ -507,7 +638,6 @@ function openTagAssign(downloadId, anchorEl) {
         anchorEl.parentElement.appendChild(pop);
     }
 
-    // Close on outside click (defer to avoid immediate close)
     setTimeout(() => {
         document.addEventListener('click', _closeTagAssignOnOutsideClick);
     }, 0);
@@ -531,13 +661,15 @@ async function toggleTagAssign(downloadId, tagId, add) {
     try {
         await fetch(`/api/downloads/${downloadId}/tags/${tagId}`, { method });
         loadHistory();
+        loadTags();
+        if (state.currentView === 'library') loadLibrary();
     } catch (e) {
         console.error('Failed to toggle tag', e);
     }
     closeTagAssign();
 }
 
-// --- Tag Manager Modal ---
+// ===== Tag Manager Modal =====
 
 function openTagManager() {
     closeTagAssign();
@@ -553,14 +685,21 @@ function openTagManager() {
     ).join('');
 
     const tagListHtml = state.tags.length > 0
-        ? state.tags.map(t =>
-            `<div class="tag-manager-row" data-tag-id="${t.id}">
+        ? state.tags.map(t => {
+            const isSystem = t.system;
+            const renameBtn = isSystem
+                ? ''
+                : `<button class="btn-sm" onclick="renameTag(${t.id}, '${escHtml(t.name)}')">Rename</button>`;
+            const deleteBtn = isSystem
+                ? '<span style="font-size:11px;color:var(--text-muted)">system</span>'
+                : `<button class="btn-sm btn-danger" onclick="removeTag(${t.id})">Delete</button>`;
+            return `<div class="tag-manager-row" data-tag-id="${t.id}">
                 <span class="tag-chip" style="background:${t.color}20; color:${t.color}; border-color:${t.color}">${escHtml(t.name)}</span>
                 <span style="flex:1"></span>
-                <button class="btn-sm" onclick="renameTag(${t.id}, '${escHtml(t.name)}')">Rename</button>
-                <button class="btn-sm btn-danger" onclick="removeTag(${t.id})">Delete</button>
-            </div>`
-        ).join('')
+                ${renameBtn}
+                ${deleteBtn}
+            </div>`;
+        }).join('')
         : '<p class="muted" style="font-size:12px">No tags created yet</p>';
 
     overlay.innerHTML = `
@@ -585,7 +724,6 @@ function openTagManager() {
 
     document.body.appendChild(overlay);
 
-    // Allow Enter key to create tag
     const input = $('new-tag-name');
     if (input) {
         input.focus();
@@ -636,11 +774,16 @@ async function renameTag(tagId, currentName) {
     if (!newName || newName.trim() === currentName) return;
 
     try {
-        await fetch(`/api/tags/${tagId}`, {
+        const resp = await fetch(`/api/tags/${tagId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: newName.trim() }),
         });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || 'Failed to rename tag');
+            return;
+        }
         await loadTags();
         closeTagManager();
         openTagManager();
@@ -654,7 +797,12 @@ async function removeTag(tagId) {
     if (!confirm('Delete this tag? It will be removed from all downloads.')) return;
 
     try {
-        await fetch(`/api/tags/${tagId}`, { method: 'DELETE' });
+        const resp = await fetch(`/api/tags/${tagId}`, { method: 'DELETE' });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || 'Failed to delete tag');
+            return;
+        }
         await loadTags();
         if (state.activeTagFilter === tagId) {
             state.activeTagFilter = null;
@@ -667,7 +815,7 @@ async function removeTag(tagId) {
     }
 }
 
-// --- History ---
+// ===== History (Home page) =====
 
 async function loadHistory() {
     state.historyOffset = 0;
@@ -715,7 +863,6 @@ function renderHistory(items, append) {
     $('load-more-btn').hidden = items.length < state.historyLimit;
 
     for (const item of items) {
-        // Skip items that are currently active
         if ($(`job-${item.id}`)) continue;
 
         const el = document.createElement('div');
@@ -738,7 +885,6 @@ function renderHistory(items, append) {
         const pinClass = item.pinned ? 'pin-btn pinned' : 'pin-btn';
         const pinTitle = item.pinned ? 'Unpin' : 'Pin';
 
-        // Build tag chips
         const tagsHtml = (item.tags || []).map(t =>
             `<span class="tag-chip" data-tag-id="${t.id}"
                    style="background:${t.color}20; color:${t.color}; border-color:${t.color}"
@@ -747,7 +893,6 @@ function renderHistory(items, append) {
 
         const addTagBtn = `<button class="add-tag-btn" onclick="openTagAssign('${item.id}', this)" title="Add tag">+</button>`;
 
-        // Meta info line: duration, date, source
         const metaParts = [];
         if (item.duration) metaParts.push(formatDuration(item.duration));
         if (item.created_at) metaParts.push(formatDate(item.created_at));
@@ -780,15 +925,339 @@ async function deleteJob(jobId) {
         await fetch(`/api/downloads/${jobId}?delete_file=true`, { method: 'DELETE' });
         const el = $(`hist-${jobId}`);
         if (el) el.remove();
+        const libEl = $(`lib-${jobId}`);
+        if (libEl) libEl.remove();
         if ($('history-list').children.length === 0) {
             $('no-history').hidden = false;
         }
+        loadTags(); // Refresh counts
     } catch (e) {
         console.error('Failed to delete', e);
     }
 }
 
-// --- Init ---
+// ===== Library Page =====
+
+function buildLibraryUrl() {
+    const lib = state.library;
+    let url = `/api/downloads?limit=${lib.limit}&offset=${lib.offset}`;
+    url += `&sort_by=${lib.sortBy}&sort_order=${lib.sortOrder}`;
+    url += `&status=done`; // Library only shows completed downloads
+
+    if (lib.tagId !== null) url += `&tag_id=${lib.tagId}`;
+    if (lib.search) url += `&search=${encodeURIComponent(lib.search)}`;
+    if (lib.pinnedOnly) url += `&pinned_only=true`;
+    if (lib.activeFilter === 'video') {
+        url += `&format_preset=video`;
+    } else if (lib.formatPreset) {
+        url += `&format_preset=${encodeURIComponent(lib.formatPreset)}`;
+    }
+
+    return url;
+}
+
+async function loadLibrary() {
+    state.library.offset = 0;
+    state.library.selected.clear();
+    updateBulkUI();
+
+    try {
+        const resp = await fetch(buildLibraryUrl());
+        if (!resp.ok) return;
+        state.library.items = await resp.json();
+        renderLibrary(false);
+    } catch (e) {
+        console.error('Failed to load library', e);
+    }
+}
+
+async function loadMoreLibrary() {
+    state.library.offset += state.library.limit;
+    try {
+        const resp = await fetch(buildLibraryUrl());
+        if (!resp.ok) return;
+        const more = await resp.json();
+        state.library.items.push(...more);
+        renderLibrary(true, more);
+    } catch (e) {
+        console.error('Failed to load more library', e);
+    }
+}
+
+function renderLibrary(append, newItems) {
+    const list = $('library-list');
+    const items = append ? (newItems || []) : state.library.items;
+
+    if (!append) list.innerHTML = '';
+
+    if (state.library.items.length === 0) {
+        $('no-library').hidden = false;
+        $('library-load-more').hidden = true;
+        return;
+    }
+
+    $('no-library').hidden = true;
+    $('library-load-more').hidden = items.length < state.library.limit;
+
+    for (const item of items) {
+        const el = document.createElement('div');
+        const pinnedClass = item.pinned ? ' pinned' : '';
+        const selectedClass = state.library.selected.has(item.id) ? ' selected' : '';
+        el.className = 'library-item' + pinnedClass + selectedClass;
+        el.id = `lib-${item.id}`;
+
+        const thumbHtml = item.thumbnail
+            ? `<img class="lib-thumb" src="${item.thumbnail}" alt="">`
+            : `<div class="lib-thumb"></div>`;
+
+        const downloadBtn = item.file_name
+            ? `<a class="download-link" href="/files/${encodeURIComponent(item.file_name)}">Download</a>`
+            : '';
+
+        const pinClass = item.pinned ? 'pin-btn pinned' : 'pin-btn';
+
+        const tagsHtml = (item.tags || []).map(t =>
+            `<span class="tag-chip" data-tag-id="${t.id}"
+                   style="background:${t.color}20; color:${t.color}; border-color:${t.color}">${escHtml(t.name)}</span>`
+        ).join('');
+
+        const addTagBtn = `<button class="add-tag-btn" onclick="openTagAssign('${item.id}', this)" title="Add tag">+</button>`;
+
+        const metaParts = [];
+        if (item.format_preset) metaParts.push(formatPresetLabel(item.format_preset));
+        if (item.created_at) metaParts.push(formatDate(item.created_at));
+        if (item.url) {
+            let hostname = '';
+            try { hostname = new URL(item.url).hostname.replace(/^www\./, ''); } catch {}
+            if (hostname) metaParts.push(hostname);
+        }
+
+        el.innerHTML = `
+            <input type="checkbox" class="lib-checkbox"
+                   ${state.library.selected.has(item.id) ? 'checked' : ''}
+                   onchange="toggleLibrarySelect('${item.id}', this.checked)">
+            ${thumbHtml}
+            <div class="lib-info">
+                <span class="lib-title" title="${escHtml(item.title || item.url)}">${escHtml(item.title || item.url)}</span>
+                <span class="lib-meta">${metaParts.join(' &middot; ')}</span>
+                <span class="lib-tags">${tagsHtml}${addTagBtn}</span>
+            </div>
+            <span class="lib-duration">${formatDuration(item.duration)}</span>
+            <span class="lib-size">${item.file_size ? formatBytes(item.file_size) : ''}</span>
+            <span class="lib-pin">
+                <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${item.pinned ? 'Unpin' : 'Pin'}">&#9733;</button>
+            </span>
+            <span class="lib-actions">
+                ${downloadBtn}
+                <button class="delete-btn" onclick="deleteJob('${item.id}')" style="border-color:var(--error);color:var(--error)">Del</button>
+            </span>
+        `;
+        list.appendChild(el);
+    }
+}
+
+function renderLibraryTagFilters() {
+    const container = $('library-tag-filters');
+    if (!container) return;
+
+    if (state.tags.length === 0) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const lib = state.library;
+    let html = `<span class="tag-filter-chip ${lib.tagId === null ? 'active' : ''}"
+                     onclick="setLibraryTagFilter(null)">All Tags</span>`;
+    for (const t of state.tags) {
+        const active = lib.tagId === t.id ? 'active' : '';
+        const style = lib.tagId === t.id
+            ? `background:${t.color}; border-color:${t.color}; color:#fff`
+            : '';
+        html += `<span class="tag-filter-chip ${active}" style="${style}"
+                       onclick="setLibraryTagFilter(${t.id})">${escHtml(t.name)} (${t.count || 0})</span>`;
+    }
+    container.innerHTML = html;
+}
+
+function setLibraryTagFilter(tagId) {
+    state.library.tagId = tagId;
+    state.activeTagFilter = tagId;
+    renderSidebarTags();
+    renderLibraryTagFilters();
+    loadLibrary();
+}
+
+// Library Filters
+
+function setLibraryFilter(type, value) {
+    const lib = state.library;
+
+    // Reset
+    lib.pinnedOnly = false;
+    lib.formatPreset = null;
+
+    if (type === 'pinned') {
+        lib.pinnedOnly = true;
+        lib.activeFilter = 'pinned';
+    } else if (type === 'format') {
+        if (value === 'audio_mp3') {
+            lib.formatPreset = 'audio_mp3';
+            lib.activeFilter = 'audio_mp3';
+        } else if (value === 'video') {
+            // Video includes best_video, video_720p, video_1080p — we filter on the JS side
+            // or just use best_video; for now we don't filter by format on video (show all non-audio)
+            lib.activeFilter = 'video';
+        }
+    } else {
+        lib.activeFilter = 'all';
+    }
+
+    // Update button states
+    document.querySelectorAll('.filter-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.filter === lib.activeFilter);
+    });
+
+    loadLibrary();
+}
+
+let _libSearchTimer = null;
+
+function onLibrarySearch(value) {
+    clearTimeout(_libSearchTimer);
+    _libSearchTimer = setTimeout(() => {
+        state.library.search = value.trim();
+        loadLibrary();
+    }, 400);
+}
+
+function onLibrarySortChange() {
+    state.library.sortBy = $('library-sort-by').value;
+    loadLibrary();
+}
+
+function toggleLibrarySortOrder() {
+    const lib = state.library;
+    lib.sortOrder = lib.sortOrder === 'desc' ? 'asc' : 'desc';
+    $('library-sort-order').innerHTML = lib.sortOrder === 'desc' ? '&#9660;' : '&#9650;';
+    loadLibrary();
+}
+
+// Library Bulk Selection
+
+function toggleLibrarySelect(jobId, checked) {
+    if (checked) {
+        state.library.selected.add(jobId);
+    } else {
+        state.library.selected.delete(jobId);
+    }
+
+    const el = $(`lib-${jobId}`);
+    if (el) el.classList.toggle('selected', checked);
+
+    updateBulkUI();
+}
+
+function clearBulkSelection() {
+    state.library.selected.clear();
+    document.querySelectorAll('.lib-checkbox').forEach(cb => {
+        cb.checked = false;
+    });
+    document.querySelectorAll('.library-item.selected').forEach(el => {
+        el.classList.remove('selected');
+    });
+    updateBulkUI();
+}
+
+function updateBulkUI() {
+    const count = state.library.selected.size;
+    $('bulk-actions').hidden = count === 0;
+    $('bulk-count').textContent = `${count} selected`;
+}
+
+async function bulkPin(pinned) {
+    const ids = [...state.library.selected];
+    if (ids.length === 0) return;
+    try {
+        await fetch('/api/downloads/bulk/pin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, pinned }),
+        });
+        clearBulkSelection();
+        loadLibrary();
+    } catch (e) {
+        console.error('Bulk pin failed', e);
+    }
+}
+
+function openBulkTagAssign() {
+    closeTagAssign();
+
+    const ids = [...state.library.selected];
+    if (ids.length === 0) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'bulk-tag-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+    let html = '<div class="modal-content" style="width:300px">';
+    html += '<div class="modal-header"><h3>Add Tag to Selected</h3><button class="modal-close" onclick="document.getElementById(\'bulk-tag-overlay\').remove()">&times;</button></div>';
+    html += '<div class="modal-body">';
+    for (const t of state.tags) {
+        html += `<div class="tag-assign-row" style="padding:6px 0; cursor:pointer"
+                      onclick="doBulkTag(${t.id})">
+            <span class="tag-chip" style="background:${t.color}20; color:${t.color}; border-color:${t.color}">${escHtml(t.name)}</span>
+        </div>`;
+    }
+    if (state.tags.length === 0) {
+        html += '<p class="muted">No tags yet</p>';
+    }
+    html += '</div></div>';
+    overlay.innerHTML = html;
+    document.body.appendChild(overlay);
+}
+
+async function doBulkTag(tagId) {
+    const ids = [...state.library.selected];
+    const overlay = $('bulk-tag-overlay');
+    if (overlay) overlay.remove();
+
+    try {
+        await fetch('/api/downloads/bulk/tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, tag_id: tagId }),
+        });
+        clearBulkSelection();
+        loadLibrary();
+        loadTags();
+    } catch (e) {
+        console.error('Bulk tag failed', e);
+    }
+}
+
+async function bulkDelete() {
+    const ids = [...state.library.selected];
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} file(s)? This will also remove the files from disk.`)) return;
+
+    try {
+        await fetch('/api/downloads/bulk/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+        });
+        clearBulkSelection();
+        loadLibrary();
+        loadTags();
+        loadHistory();
+    } catch (e) {
+        console.error('Bulk delete failed', e);
+    }
+}
+
+// ===== Init =====
 
 async function loadVersion() {
     try {
@@ -807,6 +1276,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadTags();
     loadHistory();
     loadExtractors();
+    initRouter();
 
     const urlInput = $('url-input');
     urlInput.addEventListener('keydown', (e) => {
@@ -815,4 +1285,7 @@ document.addEventListener('DOMContentLoaded', () => {
     urlInput.addEventListener('input', (e) => {
         onUrlInput(e.target.value);
     });
+
+    // Start sidebar collapsed
+    $('sidebar').classList.add('collapsed');
 });

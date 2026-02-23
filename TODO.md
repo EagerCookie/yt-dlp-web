@@ -19,11 +19,22 @@
 - [x] UI for assigning tags to downloads (multi-select)
 - [x] Store tags in DB (many-to-many: downloads <-> tags)
 - [x] Filter history by tags
+- [x] System tags (Audio, Video) — created automatically, protected from deletion
+- [x] Auto-tagging: assign Audio/Video tag automatically on download completion
 
 ## UI / Side Panel
-- [ ] Rework side panel: move tag management into side panel as primary feature
-  — supported services list is informational only, should be secondary/collapsed
-- [ ] Future: sortable history (by date, name, size) with tag filters on the same page
+- [x] Rework side panel: tags section as primary, services collapsed
+- [x] Sidebar navigation: Home / Library with icons
+- [x] SPA routing (History API) between Home and Library views
+
+## Library Page
+- [x] Dedicated Library page for managing downloaded files
+- [x] Search by title or URL
+- [x] Filter by: all, pinned, audio, video
+- [x] Filter by tag
+- [x] Sort by: date, name, size, duration (asc/desc)
+- [x] Bulk select with actions: pin/unpin, assign tag, delete
+- [x] Direct URL access (`/library` works without 404)
 
 ## Playlists
 - [ ] Generate playlists based on tag filters (M3U/PLS format)

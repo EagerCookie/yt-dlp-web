@@ -8,96 +8,182 @@
 </head>
 <body>
     <div class="page-layout">
-        <!-- Side Panel -->
-        <aside class="side-panel collapsed" id="side-panel">
-            <button class="side-panel-toggle" onclick="toggleSidePanel()">
-                <span class="toggle-icon" id="toggle-icon">&#9654;</span>
-                <span>Supported Services</span>
-                <span class="extractor-count" id="extractor-count"></span>
-            </button>
-            <div class="side-panel-body" id="side-panel-body">
-                <input type="text" class="extractor-search" id="extractor-search"
-                       placeholder="Search services..." oninput="renderExtractors(this.value)">
-                <ul class="extractor-list" id="extractor-list"></ul>
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <!-- Navigation -->
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" data-view="home" onclick="navigateTo('home')" title="Home">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12l9-9 9 9"/><path d="M9 21V9h6v12"/></svg>
+                    <span class="nav-label">Home</span>
+                </button>
+                <button class="nav-btn" data-view="library" onclick="navigateTo('library')" title="Library">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+                    <span class="nav-label">Library</span>
+                </button>
+                <button class="sidebar-expand-btn" onclick="toggleSidebar()" title="Expand sidebar">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+            </nav>
+
+            <!-- Sidebar Body (visible when expanded) -->
+            <div class="sidebar-body" id="sidebar-body">
+                <!-- Tags Section -->
+                <div class="sidebar-section sidebar-tags">
+                    <div class="sidebar-section-header">
+                        <span>Tags</span>
+                        <button class="btn-icon" onclick="openTagManager()" title="Manage tags">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+                        </button>
+                    </div>
+                    <ul class="sidebar-tag-list" id="sidebar-tag-list"></ul>
+                </div>
+
+                <!-- Services Section (collapsed by default) -->
+                <div class="sidebar-section sidebar-services">
+                    <button class="sidebar-section-toggle" onclick="toggleServicesSection()">
+                        <span class="toggle-arrow" id="services-arrow">&#9654;</span>
+                        <span>Services</span>
+                        <span class="extractor-count" id="extractor-count"></span>
+                    </button>
+                    <div class="sidebar-services-body" id="services-body" hidden>
+                        <input type="text" class="extractor-search" id="extractor-search"
+                               placeholder="Search services..." oninput="renderExtractors(this.value)">
+                        <ul class="extractor-list" id="extractor-list"></ul>
+                    </div>
+                </div>
             </div>
         </aside>
 
         <!-- Main Content -->
         <div class="main-content">
-            <div class="container">
-                <header>
-                    <h1>yt-dlp Web</h1>
-                    <p class="version" id="version-info"></p>
-                </header>
+            <!-- View: Home -->
+            <div id="view-home" class="view">
+                <div class="container">
+                    <header>
+                        <h1>yt-dlp Web</h1>
+                        <p class="version" id="version-info"></p>
+                    </header>
 
-                <!-- URL Input -->
-                <section class="card" id="input-section">
-                    <div class="url-row">
-                        <input type="text" id="url-input" placeholder="Paste video URL here..." autofocus>
-                        <button id="fetch-btn" onclick="fetchInfo()">Fetch Info</button>
-                    </div>
-                    <div id="url-warning" class="url-warning" hidden>
-                        This source may not be directly supported. Download may still work via generic extractor.
-                    </div>
-                    <div id="error-msg" class="error-msg" hidden></div>
-                </section>
+                    <!-- URL Input -->
+                    <section class="card" id="input-section">
+                        <div class="url-row">
+                            <input type="text" id="url-input" placeholder="Paste video URL here..." autofocus>
+                            <button id="fetch-btn" onclick="fetchInfo()">Fetch Info</button>
+                        </div>
+                        <div id="url-warning" class="url-warning" hidden>
+                            This source may not be directly supported. Download may still work via generic extractor.
+                        </div>
+                        <div id="error-msg" class="error-msg" hidden></div>
+                    </section>
 
-                <!-- Preview -->
-                <section class="card" id="preview-section" hidden>
-                    <div class="preview">
-                        <img id="preview-thumb" src="" alt="Thumbnail">
-                        <div class="preview-info">
-                            <h2 id="preview-title"></h2>
-                            <p id="preview-uploader"></p>
-                            <p id="preview-duration"></p>
-                            <div id="playlist-warning" class="warning" hidden>
-                                This is a playlist. All items will be downloaded.
+                    <!-- Preview -->
+                    <section class="card" id="preview-section" hidden>
+                        <div class="preview">
+                            <img id="preview-thumb" src="" alt="Thumbnail">
+                            <div class="preview-info">
+                                <h2 id="preview-title"></h2>
+                                <p id="preview-uploader"></p>
+                                <p id="preview-duration"></p>
+                                <div id="playlist-warning" class="warning" hidden>
+                                    This is a playlist. All items will be downloaded.
+                                </div>
                             </div>
+                        </div>
+
+                        <div class="format-selector" id="format-selector">
+                            <label class="format-option">
+                                <input type="radio" name="format" value="best_video" checked>
+                                <span>Best Video (MP4) <small class="format-size" data-preset="best_video"></small></span>
+                            </label>
+                            <label class="format-option">
+                                <input type="radio" name="format" value="audio_mp3">
+                                <span>Audio (MP3) <small class="format-size" data-preset="audio_mp3"></small></span>
+                            </label>
+                            <label class="format-option">
+                                <input type="radio" name="format" value="video_720p">
+                                <span>720p <small class="format-size" data-preset="video_720p"></small></span>
+                            </label>
+                            <label class="format-option">
+                                <input type="radio" name="format" value="video_1080p">
+                                <span>1080p <small class="format-size" data-preset="video_1080p"></small></span>
+                            </label>
+                        </div>
+
+                        <div class="download-row">
+                            <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
+                            <label class="pin-at-download" title="Pin this file to prevent auto-cleanup">
+                                <input type="checkbox" id="pin-on-download"> Pin
+                            </label>
+                        </div>
+                    </section>
+
+                    <!-- Active Downloads -->
+                    <section id="active-section">
+                        <h2>Active Downloads</h2>
+                        <div id="active-list"></div>
+                        <p id="no-active" class="muted">No active downloads</p>
+                    </section>
+
+                    <!-- History -->
+                    <section id="history-section">
+                        <h2>History</h2>
+                        <div id="tag-filter" class="tag-filter-strip" hidden></div>
+                        <div id="history-list"></div>
+                        <p id="no-history" class="muted">No downloads yet</p>
+                        <button id="load-more-btn" class="btn-secondary" onclick="loadMoreHistory()" hidden>Load More</button>
+                    </section>
+                </div>
+            </div>
+
+            <!-- View: Library -->
+            <div id="view-library" class="view" hidden>
+                <div class="container">
+                    <header class="library-header">
+                        <h1>Library</h1>
+                        <div class="library-search">
+                            <input type="text" id="library-search-input" placeholder="Search by title or URL..."
+                                   oninput="onLibrarySearch(this.value)">
+                        </div>
+                    </header>
+
+                    <!-- Filters bar -->
+                    <div class="library-filters">
+                        <div class="filter-group">
+                            <button class="filter-btn active" data-filter="all" onclick="setLibraryFilter('status', null)">All</button>
+                            <button class="filter-btn" data-filter="pinned" onclick="setLibraryFilter('pinned', true)">Pinned</button>
+                            <button class="filter-btn" data-filter="audio_mp3" onclick="setLibraryFilter('format', 'audio_mp3')">Audio</button>
+                            <button class="filter-btn" data-filter="video" onclick="setLibraryFilter('format', 'video')">Video</button>
+                        </div>
+                        <div class="sort-group">
+                            <label>Sort:</label>
+                            <select id="library-sort-by" onchange="onLibrarySortChange()">
+                                <option value="created_at">Date</option>
+                                <option value="title">Name</option>
+                                <option value="file_size">Size</option>
+                                <option value="duration">Duration</option>
+                            </select>
+                            <button class="sort-order-btn" id="library-sort-order" onclick="toggleLibrarySortOrder()" title="Toggle sort order">&#9660;</button>
                         </div>
                     </div>
 
-                    <div class="format-selector" id="format-selector">
-                        <label class="format-option">
-                            <input type="radio" name="format" value="best_video" checked>
-                            <span>Best Video (MP4) <small class="format-size" data-preset="best_video"></small></span>
-                        </label>
-                        <label class="format-option">
-                            <input type="radio" name="format" value="audio_mp3">
-                            <span>Audio (MP3) <small class="format-size" data-preset="audio_mp3"></small></span>
-                        </label>
-                        <label class="format-option">
-                            <input type="radio" name="format" value="video_720p">
-                            <span>720p <small class="format-size" data-preset="video_720p"></small></span>
-                        </label>
-                        <label class="format-option">
-                            <input type="radio" name="format" value="video_1080p">
-                            <span>1080p <small class="format-size" data-preset="video_1080p"></small></span>
-                        </label>
+                    <!-- Tag filter chips -->
+                    <div class="library-tag-filters" id="library-tag-filters"></div>
+
+                    <!-- Bulk actions bar (hidden until selection) -->
+                    <div class="bulk-actions" id="bulk-actions" hidden>
+                        <span class="bulk-count" id="bulk-count">0 selected</span>
+                        <button class="btn-sm" onclick="bulkPin(true)">Pin</button>
+                        <button class="btn-sm" onclick="bulkPin(false)">Unpin</button>
+                        <button class="btn-sm" onclick="openBulkTagAssign()">Add Tag</button>
+                        <button class="btn-sm btn-danger" onclick="bulkDelete()">Delete</button>
+                        <button class="btn-sm" onclick="clearBulkSelection()">Cancel</button>
                     </div>
 
-                    <div class="download-row">
-                        <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
-                        <label class="pin-at-download" title="Pin this file to prevent auto-cleanup">
-                            <input type="checkbox" id="pin-on-download"> Pin
-                        </label>
-                    </div>
-                </section>
-
-                <!-- Active Downloads -->
-                <section id="active-section">
-                    <h2>Active Downloads</h2>
-                    <div id="active-list"></div>
-                    <p id="no-active" class="muted">No active downloads</p>
-                </section>
-
-                <!-- History -->
-                <section id="history-section">
-                    <h2>History</h2>
-                    <div id="tag-filter" class="tag-filter-strip" hidden></div>
-                    <div id="history-list"></div>
-                    <p id="no-history" class="muted">No downloads yet</p>
-                    <button id="load-more-btn" class="btn-secondary" onclick="loadMoreHistory()" hidden>Load More</button>
-                </section>
+                    <!-- Library list -->
+                    <div id="library-list"></div>
+                    <p id="no-library" class="muted" hidden>No files found</p>
+                    <button id="library-load-more" class="btn-secondary" onclick="loadMoreLibrary()" hidden>Load More</button>
+                </div>
             </div>
         </div>
     </div>

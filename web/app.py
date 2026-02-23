@@ -14,12 +14,16 @@ from pydantic import BaseModel
 from web.models import (
     DB_PATH,
     add_tag_to_download,
+    bulk_add_tag,
+    bulk_delete,
+    bulk_pin,
     create_tag,
     delete_download,
     delete_tag,
     get_db,
     get_download,
     get_downloads_older_than,
+    get_tag_by_name,
     init_db,
     insert_download,
     list_downloads,
@@ -146,6 +150,20 @@ async def consume_progress(job_id: str, queue: asyncio.Queue,
                         file_size=data.get('file_size'),
                         completed_at=time.time(),
                     )
+                    # Auto-tag: assign Audio or Video system tag
+                    try:
+                        row = await get_download(db, job_id)
+                        if row:
+                            preset = row.get('format_preset', '')
+                            if preset == 'audio_mp3':
+                                tag_name = 'Audio'
+                            else:
+                                tag_name = 'Video'
+                            tag = await get_tag_by_name(db, tag_name)
+                            if tag:
+                                await add_tag_to_download(db, job_id, tag['id'])
+                    except Exception:
+                        logger.exception('Auto-tag error for job %s', job_id)
                 elif status == 'cancelled':
                     await update_download(
                         db, job_id,
@@ -221,10 +239,29 @@ class TagUpdate(BaseModel):
     color: str | None = None
 
 
+class BulkIds(BaseModel):
+    ids: list[str]
+
+
+class BulkPin(BaseModel):
+    ids: list[str]
+    pinned: bool
+
+
+class BulkTag(BaseModel):
+    ids: list[str]
+    tag_id: int
+
+
 # --- API endpoints ---
 
 @app.get('/')
 async def index():
+    return FileResponse(os.path.join(static_dir, 'index.html'))
+
+
+@app.get('/library')
+async def library():
     return FileResponse(os.path.join(static_dir, 'index.html'))
 
 
@@ -318,8 +355,20 @@ async def cancel_download(job_id: str):
 @app.get('/api/downloads')
 async def get_downloads(limit: int = Query(50, ge=1, le=200),
                         offset: int = Query(0, ge=0),
-                        tag_id: int | None = Query(None)):
-    rows = await list_downloads(app.state.db, limit, offset, tag_id=tag_id)
+                        tag_id: int | None = Query(None),
+                        search: str | None = Query(None),
+                        sort_by: str = Query('created_at'),
+                        sort_order: str = Query('desc'),
+                        pinned_only: bool = Query(False),
+                        format_preset: str | None = Query(None),
+                        status: str | None = Query(None)):
+    rows = await list_downloads(
+        app.state.db, limit, offset,
+        tag_id=tag_id, search=search,
+        sort_by=sort_by, sort_order=sort_order,
+        pinned_only=pinned_only, format_preset=format_preset,
+        status=status,
+    )
     return rows
 
 
@@ -403,6 +452,13 @@ async def create_tag_endpoint(req: TagCreate):
 
 @app.patch('/api/tags/{tag_id}')
 async def update_tag_endpoint(tag_id: int, req: TagUpdate):
+    # Check if system tag — only allow color change, not rename
+    tags = await list_tags(app.state.db)
+    tag = next((t for t in tags if t['id'] == tag_id), None)
+    if tag and tag.get('system'):
+        if req.name is not None and req.name.strip() != tag['name']:
+            raise HTTPException(status_code=400, detail='Cannot rename system tag')
+
     fields = {}
     if req.name is not None:
         fields['name'] = req.name.strip()
@@ -416,6 +472,10 @@ async def update_tag_endpoint(tag_id: int, req: TagUpdate):
 
 @app.delete('/api/tags/{tag_id}')
 async def delete_tag_endpoint(tag_id: int):
+    tags = await list_tags(app.state.db)
+    tag = next((t for t in tags if t['id'] == tag_id), None)
+    if tag and tag.get('system'):
+        raise HTTPException(status_code=400, detail='Cannot delete system tag')
     await delete_tag(app.state.db, tag_id)
     return {'status': 'deleted'}
 
@@ -433,6 +493,32 @@ async def assign_tag(job_id: str, tag_id: int):
 async def unassign_tag(job_id: str, tag_id: int):
     await remove_tag_from_download(app.state.db, job_id, tag_id)
     return {'status': 'removed'}
+
+
+# --- Bulk operations ---
+
+@app.post('/api/downloads/bulk/pin')
+async def bulk_pin_endpoint(req: BulkPin):
+    await bulk_pin(app.state.db, req.ids, req.pinned)
+    return {'status': 'updated', 'count': len(req.ids)}
+
+
+@app.post('/api/downloads/bulk/tags')
+async def bulk_tag_endpoint(req: BulkTag):
+    await bulk_add_tag(app.state.db, req.ids, req.tag_id)
+    return {'status': 'updated', 'count': len(req.ids)}
+
+
+@app.post('/api/downloads/bulk/delete')
+async def bulk_delete_endpoint(req: BulkIds):
+    deleted = await bulk_delete(app.state.db, req.ids)
+    for d in deleted:
+        if d.get('file_path') and os.path.exists(d['file_path']):
+            try:
+                os.remove(d['file_path'])
+            except OSError:
+                pass
+    return {'status': 'deleted', 'count': len(deleted)}
 
 
 # --- WebSocket endpoints ---

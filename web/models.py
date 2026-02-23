@@ -25,6 +25,9 @@ CREATE TABLE IF NOT EXISTS downloads (
 )
 '''
 
+# Allowed sort columns to prevent SQL injection
+_SORT_COLUMNS = {'created_at', 'title', 'file_size', 'duration'}
+
 
 async def get_db(path: str | None = None) -> aiosqlite.Connection:
     db = await aiosqlite.connect(path or DB_PATH)
@@ -49,9 +52,16 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name       TEXT NOT NULL UNIQUE,
             color      TEXT NOT NULL DEFAULT '#3b82f6',
+            system     INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL
         )
     ''')
+
+    # Add system column if missing (for existing DBs)
+    try:
+        await db.execute('ALTER TABLE tags ADD COLUMN system INTEGER NOT NULL DEFAULT 0')
+    except Exception:
+        pass
 
     # Junction table: downloads <-> tags
     await db.execute('''
@@ -65,10 +75,28 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
     await db.commit()
 
 
+async def _ensure_system_tags(db: aiosqlite.Connection) -> None:
+    """Create system tags (Audio, Video) if they don't exist."""
+    system_tags = [
+        ('Audio', '#22c55e'),
+        ('Video', '#3b82f6'),
+    ]
+    for name, color in system_tags:
+        try:
+            await db.execute(
+                'INSERT INTO tags (name, color, system, created_at) VALUES (?, ?, 1, ?)',
+                (name, color, time.time()))
+        except Exception:
+            # Tag already exists — ensure it's marked as system
+            await db.execute('UPDATE tags SET system = 1 WHERE name = ?', (name,))
+    await db.commit()
+
+
 async def init_db(db: aiosqlite.Connection) -> None:
     await db.execute(SCHEMA)
     await db.commit()
     await _run_migrations(db)
+    await _ensure_system_tags(db)
 
 
 # --- Downloads ---
@@ -99,25 +127,53 @@ async def get_download(db: aiosqlite.Connection, job_id: str) -> dict | None:
         if not row:
             return None
         result = dict(row)
-    # Attach tags
     result['tags'] = await get_tags_for_download(db, job_id)
     return result
 
 
 async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
-                         offset: int = 0, tag_id: int | None = None) -> list[dict]:
+                         offset: int = 0, tag_id: int | None = None,
+                         search: str | None = None,
+                         sort_by: str = 'created_at',
+                         sort_order: str = 'desc',
+                         pinned_only: bool = False,
+                         format_preset: str | None = None,
+                         status: str | None = None) -> list[dict]:
+    # Validate sort params
+    if sort_by not in _SORT_COLUMNS:
+        sort_by = 'created_at'
+    if sort_order not in ('asc', 'desc'):
+        sort_order = 'desc'
+
+    conditions = []
+    params: list = []
+
     if tag_id is not None:
-        query = (
-            'SELECT d.* FROM downloads d '
-            'JOIN download_tags dt ON d.id = dt.download_id '
-            'WHERE dt.tag_id = ? '
-            'ORDER BY d.pinned DESC, d.created_at DESC LIMIT ? OFFSET ?'
-        )
-        params = (tag_id, limit, offset)
-    else:
-        query = ('SELECT * FROM downloads '
-                 'ORDER BY pinned DESC, created_at DESC LIMIT ? OFFSET ?')
-        params = (limit, offset)
+        conditions.append('d.id IN (SELECT download_id FROM download_tags WHERE tag_id = ?)')
+        params.append(tag_id)
+
+    if search:
+        conditions.append('(d.title LIKE ? OR d.url LIKE ?)')
+        params.extend([f'%{search}%', f'%{search}%'])
+
+    if pinned_only:
+        conditions.append('d.pinned = 1')
+
+    if format_preset:
+        if format_preset == 'video':
+            conditions.append("d.format_preset != 'audio_mp3'")
+        else:
+            conditions.append('d.format_preset = ?')
+            params.append(format_preset)
+
+    if status:
+        conditions.append('d.status = ?')
+        params.append(status)
+
+    where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+    order = f'ORDER BY d.pinned DESC, d.{sort_by} {sort_order}'
+    query = f'SELECT d.* FROM downloads d {where} {order} LIMIT ? OFFSET ?'
+    params.extend([limit, offset])
 
     async with db.execute(query, params) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
@@ -161,6 +217,38 @@ async def get_downloads_older_than(db: aiosqlite.Connection,
         return [dict(r) for r in rows]
 
 
+# --- Bulk operations ---
+
+async def bulk_pin(db: aiosqlite.Connection, job_ids: list[str], pinned: bool) -> None:
+    val = 1 if pinned else 0
+    now = time.time()
+    for jid in job_ids:
+        await db.execute('UPDATE downloads SET pinned = ?, updated_at = ? WHERE id = ?',
+                         (val, now, jid))
+    await db.commit()
+
+
+async def bulk_add_tag(db: aiosqlite.Connection, job_ids: list[str], tag_id: int) -> None:
+    for jid in job_ids:
+        await db.execute(
+            'INSERT OR IGNORE INTO download_tags (download_id, tag_id) VALUES (?, ?)',
+            (jid, tag_id))
+    await db.commit()
+
+
+async def bulk_delete(db: aiosqlite.Connection, job_ids: list[str]) -> list[dict]:
+    """Delete downloads and return their file_path info for cleanup."""
+    deleted = []
+    for jid in job_ids:
+        async with db.execute('SELECT file_path FROM downloads WHERE id = ?', (jid,)) as cur:
+            row = await cur.fetchone()
+            if row:
+                deleted.append(dict(row))
+        await db.execute('DELETE FROM downloads WHERE id = ?', (jid,))
+    await db.commit()
+    return deleted
+
+
 # --- Pin ---
 
 async def toggle_pin(db: aiosqlite.Connection, job_id: str) -> bool:
@@ -179,18 +267,31 @@ async def toggle_pin(db: aiosqlite.Connection, job_id: str) -> bool:
 
 # --- Tags ---
 
-async def create_tag(db: aiosqlite.Connection, name: str, color: str) -> dict:
+async def create_tag(db: aiosqlite.Connection, name: str, color: str,
+                     system: bool = False) -> dict:
     now = time.time()
     cursor = await db.execute(
-        'INSERT INTO tags (name, color, created_at) VALUES (?, ?, ?)',
-        (name, color, now))
+        'INSERT INTO tags (name, color, system, created_at) VALUES (?, ?, ?, ?)',
+        (name, color, 1 if system else 0, now))
     await db.commit()
-    return {'id': cursor.lastrowid, 'name': name, 'color': color, 'created_at': now}
+    return {'id': cursor.lastrowid, 'name': name, 'color': color,
+            'system': 1 if system else 0, 'created_at': now}
 
 
 async def list_tags(db: aiosqlite.Connection) -> list[dict]:
-    async with db.execute('SELECT * FROM tags ORDER BY name') as cur:
+    """List all tags with download count."""
+    async with db.execute(
+        'SELECT t.*, COUNT(dt.download_id) as count '
+        'FROM tags t LEFT JOIN download_tags dt ON t.id = dt.tag_id '
+        'GROUP BY t.id ORDER BY t.system DESC, t.name'
+    ) as cur:
         return [dict(r) for r in await cur.fetchall()]
+
+
+async def get_tag_by_name(db: aiosqlite.Connection, name: str) -> dict | None:
+    async with db.execute('SELECT * FROM tags WHERE name = ?', (name,)) as cur:
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
 
 async def update_tag(db: aiosqlite.Connection, tag_id: int, **fields) -> None:
