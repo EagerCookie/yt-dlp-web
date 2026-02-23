@@ -1,7 +1,7 @@
 # TODO
 
 ## Media Library Enhancements
-- [ ] Save thumbnail to disk on successful download (for offline navigation)
+- [x] Save thumbnail to disk on successful download (for offline navigation)
 - [x] Show file duration in download history list
 - [x] Show download date in history list (sortable in future)
 - [x] Store source URL in DB for each download (for re-downloading, linking back)
@@ -37,12 +37,15 @@
 - [x] Direct URL access (`/library` works without 404)
 
 ## Playlists
-- [ ] Generate playlists based on tag filters (M3U/PLS format)
-- [ ] Playlist preview and playback in browser
-- [ ] Save/load playlist presets
+- [x] Manual playlists: create, add/remove tracks, drag & drop reorder
+- [x] Smart playlists: auto-populate from tag filters with sort options
+- [x] Dedicated Playlists page with sidebar navigation
+- [x] Built-in HTML5 audio/video player with prev/next/seek/volume
+- [x] M3U export (download file or copy URL for external players)
 - [ ] Playlist integrity indicator — visually mark playlists that contain non-pinned files
   (files subject to auto-cleanup). Warn user that playlist may become incomplete
 - [ ] Option to auto-pin all files in a playlist
+- [ ] Shuffle / repeat modes
 
 ## Radio Mode
 - [ ] Broadcast playlists as internet radio stream

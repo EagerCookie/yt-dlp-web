@@ -6,31 +6,40 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from web.models import (
     DB_PATH,
+    add_playlist_item,
     add_tag_to_download,
     bulk_add_tag,
     bulk_delete,
     bulk_pin,
+    create_playlist,
     create_tag,
     delete_download,
+    delete_playlist,
     delete_tag,
     get_db,
     get_download,
     get_downloads_older_than,
+    get_playlist,
+    get_playlist_items,
     get_tag_by_name,
     init_db,
     insert_download,
     list_downloads,
+    list_playlists,
     list_tags,
+    remove_playlist_item,
     remove_tag_from_download,
+    reorder_playlist_items,
     toggle_pin,
     update_download,
+    update_playlist,
     update_tag,
 )
 from web.tasks import (
@@ -45,6 +54,18 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger('yt-dlp-web')
 
 CLEANUP_HOURS = int(os.environ.get('CLEANUP_AFTER_HOURS', '0'))
+
+
+def _remove_thumbnail(row: dict) -> None:
+    """Remove local thumbnail file for a download row."""
+    thumb = row.get('thumbnail', '') or ''
+    if thumb.startswith('/files/thumbs/'):
+        thumb_path = os.path.join(DOWNLOAD_DIR, thumb[len('/files/'):])
+        try:
+            if os.path.exists(thumb_path):
+                os.remove(thumb_path)
+        except OSError:
+            pass
 
 
 # --- WebSocket manager ---
@@ -106,6 +127,7 @@ async def periodic_cleanup(db, download_dir: str, hours: int) -> None:
                         os.remove(job['file_path'])
                     except OSError:
                         pass
+                _remove_thumbnail(job)
                 await delete_download(db, job['id'])
             if old_jobs:
                 logger.info('Cleaned up %d old downloads', len(old_jobs))
@@ -253,6 +275,29 @@ class BulkTag(BaseModel):
     tag_id: int
 
 
+class PlaylistCreate(BaseModel):
+    name: str
+    type: str = 'manual'
+    smart_tag_ids: str | None = None
+    smart_sort: str = 'created_at'
+    smart_order: str = 'desc'
+
+
+class PlaylistUpdate(BaseModel):
+    name: str | None = None
+    smart_tag_ids: str | None = None
+    smart_sort: str | None = None
+    smart_order: str | None = None
+
+
+class PlaylistAddItem(BaseModel):
+    download_id: str
+
+
+class PlaylistReorder(BaseModel):
+    ids: list[str]
+
+
 # --- API endpoints ---
 
 @app.get('/')
@@ -262,6 +307,11 @@ async def index():
 
 @app.get('/library')
 async def library():
+    return FileResponse(os.path.join(static_dir, 'index.html'))
+
+
+@app.get('/playlists')
+async def playlists_page():
     return FileResponse(os.path.join(static_dir, 'index.html'))
 
 
@@ -401,6 +451,8 @@ async def remove_download(job_id: str, delete_file: bool = Query(False)):
                 os.remove(row['file_path'])
         except OSError:
             pass
+    # Remove local thumbnail
+    _remove_thumbnail(row)
 
     await delete_download(app.state.db, job_id)
     return {'status': 'deleted'}
@@ -422,10 +474,20 @@ async def serve_file(filename: str):
     if not os.path.exists(abs_path):
         raise HTTPException(status_code=404, detail='File not found')
 
+    # Use correct MIME type for thumbnails
+    media_type = 'application/octet-stream'
+    lower = filename.lower()
+    if lower.endswith(('.jpg', '.jpeg')):
+        media_type = 'image/jpeg'
+    elif lower.endswith('.png'):
+        media_type = 'image/png'
+    elif lower.endswith('.webp'):
+        media_type = 'image/webp'
+
     return FileResponse(
         abs_path,
-        filename=filename,
-        media_type='application/octet-stream',
+        filename=os.path.basename(filename),
+        media_type=media_type,
     )
 
 
@@ -527,7 +589,125 @@ async def bulk_delete_endpoint(req: BulkIds):
                 os.remove(d['file_path'])
             except OSError:
                 pass
+        _remove_thumbnail(d)
     return {'status': 'deleted', 'count': len(deleted)}
+
+
+# --- Playlists ---
+
+@app.get('/api/playlists')
+async def get_playlists():
+    return await list_playlists(app.state.db)
+
+
+@app.post('/api/playlists')
+async def create_playlist_endpoint(req: PlaylistCreate):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='Playlist name cannot be empty')
+    if req.type not in ('manual', 'smart'):
+        raise HTTPException(status_code=400, detail='Type must be manual or smart')
+    pl = await create_playlist(
+        app.state.db, name, pl_type=req.type,
+        smart_tag_ids=req.smart_tag_ids,
+        smart_sort=req.smart_sort, smart_order=req.smart_order,
+    )
+    return pl
+
+
+@app.get('/api/playlists/{playlist_id}')
+async def get_playlist_endpoint(playlist_id: int):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    items = await get_playlist_items(app.state.db, playlist_id)
+    pl['items'] = items
+    return pl
+
+
+@app.patch('/api/playlists/{playlist_id}')
+async def update_playlist_endpoint(playlist_id: int, req: PlaylistUpdate):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    fields = {}
+    if req.name is not None:
+        fields['name'] = req.name.strip()
+    if req.smart_tag_ids is not None:
+        fields['smart_tag_ids'] = req.smart_tag_ids
+    if req.smart_sort is not None:
+        fields['smart_sort'] = req.smart_sort
+    if req.smart_order is not None:
+        fields['smart_order'] = req.smart_order
+    if not fields:
+        raise HTTPException(status_code=400, detail='No fields to update')
+    await update_playlist(app.state.db, playlist_id, **fields)
+    return {'status': 'updated'}
+
+
+@app.delete('/api/playlists/{playlist_id}')
+async def delete_playlist_endpoint(playlist_id: int):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    await delete_playlist(app.state.db, playlist_id)
+    return {'status': 'deleted'}
+
+
+@app.post('/api/playlists/{playlist_id}/items')
+async def add_playlist_item_endpoint(playlist_id: int, req: PlaylistAddItem):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    if pl['type'] != 'manual':
+        raise HTTPException(status_code=400, detail='Cannot add items to smart playlist')
+    dl = await get_download(app.state.db, req.download_id)
+    if not dl:
+        raise HTTPException(status_code=404, detail='Download not found')
+    await add_playlist_item(app.state.db, playlist_id, req.download_id)
+    return {'status': 'added'}
+
+
+@app.delete('/api/playlists/{playlist_id}/items/{download_id}')
+async def remove_playlist_item_endpoint(playlist_id: int, download_id: str):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    await remove_playlist_item(app.state.db, playlist_id, download_id)
+    return {'status': 'removed'}
+
+
+@app.put('/api/playlists/{playlist_id}/reorder')
+async def reorder_playlist_endpoint(playlist_id: int, req: PlaylistReorder):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    if pl['type'] != 'manual':
+        raise HTTPException(status_code=400, detail='Cannot reorder smart playlist')
+    await reorder_playlist_items(app.state.db, playlist_id, req.ids)
+    return {'status': 'reordered'}
+
+
+@app.get('/api/playlists/{playlist_id}/m3u')
+async def export_playlist_m3u(playlist_id: int, request: Request):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    items = await get_playlist_items(app.state.db, playlist_id)
+    lines = ['#EXTM3U', f'#PLAYLIST:{pl["name"]}']
+    base = str(request.base_url).rstrip('/')
+    for item in items:
+        if item.get('file_name'):
+            dur = item.get('duration') or -1
+            title = item.get('title') or item['file_name']
+            lines.append(f'#EXTINF:{dur},{title}')
+            lines.append(f'{base}/files/{item["file_name"]}')
+    content = '\n'.join(lines) + '\n'
+    return Response(
+        content,
+        media_type='audio/x-mpegurl',
+        headers={'Content-Disposition': f'attachment; filename="{pl["name"]}.m3u"'},
+    )
 
 
 # --- WebSocket endpoints ---

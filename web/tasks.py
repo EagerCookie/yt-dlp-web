@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from yt_dlp import YoutubeDL
@@ -261,6 +262,11 @@ def run_download(job_id: str, url: str, format_preset: str,
         file_size = os.path.getsize(filepath) if filepath and os.path.exists(filepath) else None
         safe_info = YoutubeDL.sanitize_info(info, remove_private_keys=True)
 
+        # Download thumbnail to disk for offline use
+        thumb_url = safe_info.get('thumbnail')
+        local_thumb = _download_thumbnail(job_id, thumb_url, DOWNLOAD_DIR)
+        thumbnail_value = f'/files/{local_thumb}' if local_thumb else thumb_url
+
         loop.call_soon_threadsafe(progress_queue.put_nowait, {
             'job_id': job_id,
             'type': 'complete',
@@ -269,7 +275,7 @@ def run_download(job_id: str, url: str, format_preset: str,
             'file_name': os.path.basename(filepath) if filepath else None,
             'file_size': file_size,
             'title': safe_info.get('title'),
-            'thumbnail': safe_info.get('thumbnail'),
+            'thumbnail': thumbnail_value,
             'duration': safe_info.get('duration'),
         })
 
@@ -291,6 +297,29 @@ def run_download(job_id: str, url: str, format_preset: str,
             'status': 'error',
             'error_msg': str(e),
         })
+
+
+def _download_thumbnail(job_id: str, thumb_url: str, download_dir: str) -> str | None:
+    """Download thumbnail image to disk. Returns local filename or None."""
+    if not thumb_url:
+        return None
+    thumbs_dir = os.path.join(download_dir, 'thumbs')
+    os.makedirs(thumbs_dir, exist_ok=True)
+    # Determine extension from URL (default to .jpg)
+    ext = '.jpg'
+    for candidate in ('.png', '.webp', '.jpg', '.jpeg'):
+        if candidate in thumb_url.lower():
+            ext = candidate
+            break
+    local_name = f'{job_id}{ext}'
+    local_path = os.path.join(thumbs_dir, local_name)
+    try:
+        urllib.request.urlretrieve(thumb_url, local_path)
+        if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+            return f'thumbs/{local_name}'
+    except Exception:
+        logger.warning('Failed to download thumbnail for job %s: %s', job_id, thumb_url)
+    return None
 
 
 def _cleanup_partial(job_id: str, download_dir: str) -> None:

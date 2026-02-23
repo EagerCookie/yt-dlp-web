@@ -72,6 +72,30 @@ async def _run_migrations(db: aiosqlite.Connection) -> None:
         )
     ''')
 
+    # Playlists table
+    await db.execute('''
+        CREATE TABLE IF NOT EXISTS playlists (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL,
+            type        TEXT NOT NULL DEFAULT 'manual',
+            smart_tag_ids TEXT,
+            smart_sort  TEXT NOT NULL DEFAULT 'created_at',
+            smart_order TEXT NOT NULL DEFAULT 'desc',
+            created_at  REAL NOT NULL,
+            updated_at  REAL NOT NULL
+        )
+    ''')
+
+    # Playlist items (manual playlists)
+    await db.execute('''
+        CREATE TABLE IF NOT EXISTS playlist_items (
+            playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+            download_id TEXT NOT NULL REFERENCES downloads(id) ON DELETE CASCADE,
+            position    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (playlist_id, download_id)
+        )
+    ''')
+
     await db.commit()
 
 
@@ -178,32 +202,15 @@ async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
         params.append(status)
 
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
-    order = f'ORDER BY d.pinned DESC, d.{sort_by} {sort_order}'
+    order = f'ORDER BY d.{sort_by} {sort_order}'
     query = f'SELECT d.* FROM downloads d {where} {order} LIMIT ? OFFSET ?'
     params.extend([limit, offset])
 
     async with db.execute(query, params) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
 
-    # Batch-fetch tags for all returned downloads
     if rows:
-        ids = [r['id'] for r in rows]
-        placeholders = ','.join('?' * len(ids))
-        async with db.execute(
-            f'SELECT dt.download_id, t.id, t.name, t.color '
-            f'FROM download_tags dt JOIN tags t ON t.id = dt.tag_id '
-            f'WHERE dt.download_id IN ({placeholders})', ids,
-        ) as cur:
-            tag_rows = await cur.fetchall()
-
-        tag_map: dict[str, list[dict]] = {}
-        for tr in tag_rows:
-            tr = dict(tr)
-            did = tr.pop('download_id')
-            tag_map.setdefault(did, []).append(tr)
-
-        for row in rows:
-            row['tags'] = tag_map.get(row['id'], [])
+        await _attach_tags(db, rows)
 
     return rows
 
@@ -340,3 +347,194 @@ async def remove_tag_from_download(db: aiosqlite.Connection,
         'DELETE FROM download_tags WHERE download_id = ? AND tag_id = ?',
         (download_id, tag_id))
     await db.commit()
+
+
+# --- Playlists ---
+
+async def create_playlist(db: aiosqlite.Connection, name: str,
+                           pl_type: str = 'manual',
+                           smart_tag_ids: str | None = None,
+                           smart_sort: str = 'created_at',
+                           smart_order: str = 'desc') -> dict:
+    now = time.time()
+    cursor = await db.execute(
+        'INSERT INTO playlists (name, type, smart_tag_ids, smart_sort, smart_order, '
+        'created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (name, pl_type, smart_tag_ids, smart_sort, smart_order, now, now))
+    await db.commit()
+    return {'id': cursor.lastrowid, 'name': name, 'type': pl_type,
+            'smart_tag_ids': smart_tag_ids, 'smart_sort': smart_sort,
+            'smart_order': smart_order, 'created_at': now, 'updated_at': now}
+
+
+async def list_playlists(db: aiosqlite.Connection) -> list[dict]:
+    """List all playlists with item counts."""
+    async with db.execute(
+        'SELECT p.*, COUNT(pi.download_id) as item_count '
+        'FROM playlists p LEFT JOIN playlist_items pi ON p.id = pi.playlist_id '
+        'GROUP BY p.id ORDER BY p.updated_at DESC'
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+
+    # For smart playlists, compute actual item count from matching downloads
+    for row in rows:
+        if row['type'] == 'smart' and row.get('smart_tag_ids'):
+            tag_ids = [int(x) for x in row['smart_tag_ids'].split(',') if x.strip()]
+            if tag_ids:
+                placeholders = ','.join('?' * len(tag_ids))
+                async with db.execute(
+                    f'SELECT COUNT(DISTINCT d.id) as cnt FROM downloads d '
+                    f'JOIN download_tags dt ON d.id = dt.download_id '
+                    f'WHERE dt.tag_id IN ({placeholders}) AND d.status = ?',
+                    [*tag_ids, 'done'],
+                ) as cur:
+                    cnt_row = await cur.fetchone()
+                    row['item_count'] = cnt_row['cnt'] if cnt_row else 0
+    return rows
+
+
+async def get_playlist(db: aiosqlite.Connection,
+                        playlist_id: int) -> dict | None:
+    async with db.execute('SELECT * FROM playlists WHERE id = ?',
+                           (playlist_id,)) as cur:
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def update_playlist(db: aiosqlite.Connection,
+                           playlist_id: int, **fields) -> None:
+    fields['updated_at'] = time.time()
+    cols = ', '.join(f'{k} = ?' for k in fields)
+    vals = list(fields.values())
+    vals.append(playlist_id)
+    await db.execute(f'UPDATE playlists SET {cols} WHERE id = ?', vals)
+    await db.commit()
+
+
+async def delete_playlist(db: aiosqlite.Connection,
+                           playlist_id: int) -> None:
+    await db.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
+    await db.commit()
+
+
+async def add_playlist_item(db: aiosqlite.Connection, playlist_id: int,
+                             download_id: str) -> None:
+    # Get next position
+    async with db.execute(
+        'SELECT COALESCE(MAX(position), -1) + 1 as next_pos '
+        'FROM playlist_items WHERE playlist_id = ?', (playlist_id,),
+    ) as cur:
+        row = await cur.fetchone()
+        pos = row['next_pos']
+    await db.execute(
+        'INSERT OR IGNORE INTO playlist_items (playlist_id, download_id, position) '
+        'VALUES (?, ?, ?)', (playlist_id, download_id, pos))
+    await db.execute('UPDATE playlists SET updated_at = ? WHERE id = ?',
+                     (time.time(), playlist_id))
+    await db.commit()
+
+
+async def remove_playlist_item(db: aiosqlite.Connection, playlist_id: int,
+                                download_id: str) -> None:
+    await db.execute(
+        'DELETE FROM playlist_items WHERE playlist_id = ? AND download_id = ?',
+        (playlist_id, download_id))
+    await db.execute('UPDATE playlists SET updated_at = ? WHERE id = ?',
+                     (time.time(), playlist_id))
+    await db.commit()
+
+
+async def reorder_playlist_items(db: aiosqlite.Connection, playlist_id: int,
+                                  ordered_ids: list[str]) -> None:
+    """Set positions based on order of IDs in the list."""
+    for i, dl_id in enumerate(ordered_ids):
+        await db.execute(
+            'UPDATE playlist_items SET position = ? '
+            'WHERE playlist_id = ? AND download_id = ?',
+            (i, playlist_id, dl_id))
+    await db.execute('UPDATE playlists SET updated_at = ? WHERE id = ?',
+                     (time.time(), playlist_id))
+    await db.commit()
+
+
+async def get_playlist_items(db: aiosqlite.Connection,
+                              playlist_id: int) -> list[dict]:
+    """Resolve playlist items. Manual: from playlist_items. Smart: from tag filter."""
+    playlist = await get_playlist(db, playlist_id)
+    if not playlist:
+        return []
+
+    if playlist['type'] == 'smart':
+        return await _resolve_smart_playlist(db, playlist)
+    else:
+        return await _resolve_manual_playlist(db, playlist_id)
+
+
+async def _resolve_manual_playlist(db: aiosqlite.Connection,
+                                    playlist_id: int) -> list[dict]:
+    async with db.execute(
+        'SELECT d.* FROM downloads d '
+        'JOIN playlist_items pi ON d.id = pi.download_id '
+        'WHERE pi.playlist_id = ? ORDER BY pi.position',
+        (playlist_id,),
+    ) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+
+    if rows:
+        await _attach_tags(db, rows)
+    return rows
+
+
+async def _resolve_smart_playlist(db: aiosqlite.Connection,
+                                   playlist: dict) -> list[dict]:
+    tag_ids_str = playlist.get('smart_tag_ids', '')
+    if not tag_ids_str:
+        return []
+    try:
+        tag_ids = [int(x) for x in tag_ids_str.split(',') if x.strip()]
+    except ValueError:
+        return []
+    if not tag_ids:
+        return []
+
+    sort_col = playlist.get('smart_sort', 'created_at')
+    if sort_col not in _SORT_COLUMNS:
+        sort_col = 'created_at'
+    sort_ord = playlist.get('smart_order', 'desc')
+    if sort_ord not in ('asc', 'desc'):
+        sort_ord = 'desc'
+
+    placeholders = ','.join('?' * len(tag_ids))
+    query = (
+        f'SELECT DISTINCT d.* FROM downloads d '
+        f'JOIN download_tags dt ON d.id = dt.download_id '
+        f'WHERE dt.tag_id IN ({placeholders}) AND d.status = ? '
+        f'ORDER BY d.{sort_col} {sort_ord}'
+    )
+    async with db.execute(query, [*tag_ids, 'done']) as cur:
+        rows = [dict(r) for r in await cur.fetchall()]
+
+    if rows:
+        await _attach_tags(db, rows)
+    return rows
+
+
+async def _attach_tags(db: aiosqlite.Connection, rows: list[dict]) -> None:
+    """Batch-fetch and attach tags to download rows."""
+    ids = [r['id'] for r in rows]
+    placeholders = ','.join('?' * len(ids))
+    async with db.execute(
+        f'SELECT dt.download_id, t.id, t.name, t.color '
+        f'FROM download_tags dt JOIN tags t ON t.id = dt.tag_id '
+        f'WHERE dt.download_id IN ({placeholders})', ids,
+    ) as cur:
+        tag_rows = await cur.fetchall()
+
+    tag_map: dict[str, list[dict]] = {}
+    for tr in tag_rows:
+        tr = dict(tr)
+        did = tr.pop('download_id')
+        tag_map.setdefault(did, []).append(tr)
+
+    for row in rows:
+        row['tags'] = tag_map.get(row['id'], [])

@@ -20,6 +20,10 @@
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
                     <span class="nav-label">Library</span>
                 </button>
+                <button class="nav-btn" data-view="playlists" onclick="navigateTo('playlists')" title="Playlists">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
+                    <span class="nav-label">Playlists</span>
+                </button>
                 <button class="sidebar-expand-btn" onclick="toggleSidebar()" title="Expand sidebar">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
                 </button>
@@ -165,6 +169,133 @@
                     <p id="no-library" class="muted" hidden>No files found</p>
                     <button id="library-load-more" class="btn-secondary" onclick="loadMoreLibrary()" hidden>Load More</button>
                 </div>
+            </div>
+
+            <!-- View: Playlists -->
+            <div id="view-playlists" class="view" hidden>
+                <div class="container">
+                    <!-- Playlist list view -->
+                    <div id="playlists-list-view">
+                        <header class="library-header">
+                            <h1>Playlists</h1>
+                            <button class="btn-primary" onclick="openCreatePlaylistModal()">+ New Playlist</button>
+                        </header>
+                        <div id="playlists-list"></div>
+                        <p id="no-playlists" class="muted" hidden>No playlists yet</p>
+                    </div>
+
+                    <!-- Playlist detail view (hidden by default) -->
+                    <div id="playlist-detail-view" hidden>
+                        <header class="library-header">
+                            <div class="playlist-detail-header">
+                                <button class="btn-sm" onclick="backToPlaylistList()" title="Back">&larr; Back</button>
+                                <h1 id="playlist-detail-name"></h1>
+                                <span class="playlist-type-badge" id="playlist-detail-type"></span>
+                            </div>
+                            <div class="playlist-detail-actions">
+                                <button class="btn-sm" onclick="playCurrentPlaylist()" title="Play">&#9654; Play</button>
+                                <button class="btn-sm" onclick="downloadCurrentM3U()" title="Download M3U">M3U</button>
+                                <button class="btn-sm" onclick="copyCurrentPlaylistUrl()" title="Copy M3U URL">Copy URL</button>
+                            </div>
+                        </header>
+
+                        <!-- Smart playlist settings -->
+                        <div id="smart-playlist-settings" class="smart-settings" hidden>
+                            <div class="smart-tags" id="smart-tag-chips"></div>
+                            <div class="sort-group">
+                                <label>Sort:</label>
+                                <select id="smart-sort-by" onchange="onSmartSortChange()">
+                                    <option value="created_at">Date</option>
+                                    <option value="title">Name</option>
+                                    <option value="duration">Duration</option>
+                                </select>
+                                <button class="sort-order-btn" id="smart-sort-order" onclick="toggleSmartSortOrder()">&#9660;</button>
+                            </div>
+                        </div>
+
+                        <!-- Tracks list -->
+                        <div id="playlist-tracks"></div>
+                        <p id="no-tracks" class="muted" hidden>No tracks in this playlist</p>
+
+                        <!-- Add tracks button (manual only) -->
+                        <button id="add-tracks-btn" class="btn-secondary" onclick="openAddToPlaylistModal()" hidden>+ Add Tracks</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Player bar (global, fixed bottom) -->
+    <div id="player-bar" class="player-bar" hidden>
+        <div class="player-controls">
+            <button class="player-btn" onclick="playerPrev()" title="Previous">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button class="player-btn player-btn-main" onclick="playerToggle()" id="player-play-btn" title="Play/Pause">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" id="player-play-icon"><polygon points="5,3 19,12 5,21"/></svg>
+            </button>
+            <button class="player-btn" onclick="playerNext()" title="Next">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg>
+            </button>
+        </div>
+        <div class="player-info">
+            <span class="player-title" id="player-title">---</span>
+            <div class="player-progress">
+                <span class="player-time" id="player-current-time">0:00</span>
+                <input type="range" class="player-seek" id="player-seek" min="0" max="100" value="0" step="0.1"
+                       oninput="playerSeek(this.value)" onchange="playerSeek(this.value)">
+                <span class="player-time" id="player-total-time">0:00</span>
+            </div>
+        </div>
+        <div class="player-volume">
+            <input type="range" class="volume-slider" id="player-volume" min="0" max="1" value="1" step="0.05"
+                   oninput="playerSetVolume(this.value)">
+        </div>
+        <audio id="player-audio"></audio>
+    </div>
+
+    <!-- Modal: Create Playlist -->
+    <div id="create-playlist-modal" class="modal-overlay" hidden>
+        <div class="modal-content">
+            <h3>New Playlist</h3>
+            <div class="modal-body">
+                <label>Name</label>
+                <input type="text" id="new-playlist-name" placeholder="My Playlist">
+                <label>Type</label>
+                <div class="modal-type-selector">
+                    <label class="format-option">
+                        <input type="radio" name="playlist-type" value="manual" checked onchange="toggleSmartOptions()">
+                        <span>Manual</span>
+                    </label>
+                    <label class="format-option">
+                        <input type="radio" name="playlist-type" value="smart" onchange="toggleSmartOptions()">
+                        <span>Smart</span>
+                    </label>
+                </div>
+                <div id="smart-options" hidden>
+                    <label>Tags</label>
+                    <div id="smart-create-tags" class="smart-tags"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-sm" onclick="closeCreatePlaylistModal()">Cancel</button>
+                <button class="btn-primary btn-sm" onclick="confirmCreatePlaylist()">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: Add Tracks to Playlist -->
+    <div id="add-tracks-modal" class="modal-overlay" hidden>
+        <div class="modal-content modal-lg">
+            <h3>Add Tracks</h3>
+            <div class="modal-body">
+                <input type="text" id="add-tracks-search" placeholder="Search downloads..."
+                       oninput="searchPlaylistCandidates(this.value)">
+                <div id="playlist-candidates-list" class="candidates-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-sm" onclick="closeAddTracksModal()">Cancel</button>
+                <button class="btn-primary btn-sm" onclick="confirmAddToPlaylist()">Add Selected</button>
             </div>
         </div>
     </div>

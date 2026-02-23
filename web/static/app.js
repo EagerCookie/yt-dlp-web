@@ -11,7 +11,7 @@ const state = {
     sidebarOpen: false,
     tags: [],              // [{id, name, color, count, system}, ...]
     activeTagFilter: null, // tag_id or null for "all"
-    currentView: 'home',   // 'home' | 'library'
+    currentView: 'home',   // 'home' | 'library' | 'playlists'
     servicesOpen: false,
 
     // Library state
@@ -24,6 +24,22 @@ const state = {
         sortOrder: 'desc',
         tagIds: new Set(),  // multi-select tag filter
         selected: new Set(),
+    },
+
+    // Playlists state
+    playlists: {
+        items: [],
+        activeId: null,
+        activePlaylist: null,
+        activeItems: [],
+    },
+
+    // Player state
+    player: {
+        playlistId: null,
+        items: [],
+        currentIndex: -1,
+        playing: false,
     },
 };
 
@@ -124,6 +140,7 @@ function navigateTo(view) {
 
     $('view-home').hidden = view !== 'home';
     $('view-library').hidden = view !== 'library';
+    $('view-playlists').hidden = view !== 'playlists';
 
     // Update nav buttons
     document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
@@ -131,25 +148,33 @@ function navigateTo(view) {
     });
 
     // Update URL
-    const url = view === 'library' ? '/library' : '/';
+    const url = view === 'library' ? '/library' : view === 'playlists' ? '/playlists' : '/';
     history.pushState({ view }, '', url);
 
-    // Load library data on first visit
+    // Load data on first visit
     if (view === 'library' && state.library.items.length === 0) {
         loadLibrary();
+    }
+    if (view === 'playlists' && state.playlists.items.length === 0) {
+        loadPlaylists();
     }
 }
 
 function initRouter() {
     const path = location.pathname;
-    if (path === '/library') {
-        state.currentView = 'library';
+    const viewMap = { '/library': 'library', '/playlists': 'playlists' };
+    const initialView = viewMap[path] || 'home';
+
+    if (initialView !== 'home') {
+        state.currentView = initialView;
         $('view-home').hidden = true;
-        $('view-library').hidden = false;
+        $('view-library').hidden = initialView !== 'library';
+        $('view-playlists').hidden = initialView !== 'playlists';
         document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.view === 'library');
+            btn.classList.toggle('active', btn.dataset.view === initialView);
         });
-        loadLibrary();
+        if (initialView === 'library') loadLibrary();
+        if (initialView === 'playlists') loadPlaylists();
     }
 
     window.addEventListener('popstate', (e) => {
@@ -157,10 +182,12 @@ function initRouter() {
         state.currentView = view;
         $('view-home').hidden = view !== 'home';
         $('view-library').hidden = view !== 'library';
+        $('view-playlists').hidden = view !== 'playlists';
         document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.view === view);
         });
         if (view === 'library') loadLibrary();
+        if (view === 'playlists') loadPlaylists();
     });
 }
 
@@ -1183,6 +1210,672 @@ async function bulkDelete() {
     }
 }
 
+// ===== Playlists =====
+
+async function loadPlaylists() {
+    try {
+        const resp = await fetch('/api/playlists');
+        if (!resp.ok) return;
+        state.playlists.items = await resp.json();
+        renderPlaylists();
+    } catch (e) {
+        console.error('Failed to load playlists', e);
+    }
+}
+
+function renderPlaylists() {
+    const list = $('playlists-list');
+    list.innerHTML = '';
+    const items = state.playlists.items;
+
+    if (items.length === 0) {
+        $('no-playlists').hidden = false;
+        return;
+    }
+    $('no-playlists').hidden = true;
+
+    for (const pl of items) {
+        const el = document.createElement('div');
+        el.className = 'playlist-card';
+        el.onclick = (e) => {
+            if (e.target.closest('button')) return;
+            openPlaylistDetail(pl.id);
+        };
+
+        const typeBadge = `<span class="playlist-type-badge ${pl.type === 'smart' ? 'smart' : ''}">${pl.type === 'smart' ? 'Smart' : 'Manual'}</span>`;
+        const count = pl.item_count || 0;
+
+        el.innerHTML = `
+            <div class="playlist-card-header">
+                <span class="playlist-card-name">${escHtml(pl.name)}</span>
+                ${typeBadge}
+            </div>
+            <div class="playlist-card-meta">
+                <span>${count} track${count !== 1 ? 's' : ''}</span>
+            </div>
+            <div class="playlist-card-actions">
+                <button onclick="playPlaylist(${pl.id})">&#9654; Play</button>
+                <button onclick="window.open('/api/playlists/${pl.id}/m3u')">M3U</button>
+                <button onclick="copyPlaylistUrl(${pl.id})">Copy URL</button>
+                <button onclick="event.stopPropagation(); deletePlaylist(${pl.id})" style="border-color:var(--error);color:var(--error)">Delete</button>
+            </div>
+        `;
+        list.appendChild(el);
+    }
+}
+
+async function openPlaylistDetail(playlistId) {
+    try {
+        const resp = await fetch(`/api/playlists/${playlistId}`);
+        if (!resp.ok) return;
+        const pl = await resp.json();
+        state.playlists.activeId = playlistId;
+        state.playlists.activePlaylist = pl;
+        state.playlists.activeItems = pl.items || [];
+
+        $('playlists-list-view').hidden = true;
+        $('playlist-detail-view').hidden = false;
+        $('playlist-detail-name').textContent = pl.name;
+        const typeBadge = $('playlist-detail-type');
+        typeBadge.textContent = pl.type === 'smart' ? 'Smart' : 'Manual';
+        typeBadge.className = 'playlist-type-badge' + (pl.type === 'smart' ? ' smart' : '');
+
+        // Show/hide smart settings
+        const smartSettings = $('smart-playlist-settings');
+        const addTracksBtn = $('add-tracks-btn');
+        if (pl.type === 'smart') {
+            smartSettings.hidden = false;
+            addTracksBtn.hidden = true;
+            renderSmartTagChips(pl);
+            // Set sort controls
+            $('smart-sort-by').value = pl.smart_sort || 'created_at';
+            $('smart-sort-order').innerHTML = (pl.smart_order || 'desc') === 'desc' ? '&#9660;' : '&#9650;';
+        } else {
+            smartSettings.hidden = true;
+            addTracksBtn.hidden = false;
+        }
+
+        renderPlaylistTracks();
+    } catch (e) {
+        console.error('Failed to open playlist', e);
+    }
+}
+
+function renderSmartTagChips(pl) {
+    const container = $('smart-tag-chips');
+    const selectedIds = new Set((pl.smart_tag_ids || '').split(',').filter(x => x).map(Number));
+
+    let html = '';
+    for (const t of state.tags) {
+        const active = selectedIds.has(t.id);
+        const style = active
+            ? `background:${t.color}; border-color:${t.color}; color:#fff`
+            : `background:${t.color}20; color:${t.color}; border-color:${t.color}`;
+        html += `<span class="tag-filter-chip ${active ? 'active' : ''}" style="${style}"
+                       onclick="toggleSmartTag(${t.id})">${escHtml(t.name)}</span>`;
+    }
+    container.innerHTML = html;
+}
+
+async function toggleSmartTag(tagId) {
+    const pl = state.playlists.activePlaylist;
+    if (!pl) return;
+    const current = new Set((pl.smart_tag_ids || '').split(',').filter(x => x).map(Number));
+    if (current.has(tagId)) current.delete(tagId);
+    else current.add(tagId);
+    const newTagIds = [...current].join(',');
+    try {
+        await fetch(`/api/playlists/${pl.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ smart_tag_ids: newTagIds }),
+        });
+        pl.smart_tag_ids = newTagIds;
+        renderSmartTagChips(pl);
+        // Reload items
+        const resp = await fetch(`/api/playlists/${pl.id}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            state.playlists.activeItems = data.items || [];
+            renderPlaylistTracks();
+        }
+    } catch (e) {
+        console.error('Failed to update smart tags', e);
+    }
+}
+
+async function onSmartSortChange() {
+    const pl = state.playlists.activePlaylist;
+    if (!pl) return;
+    const sortBy = $('smart-sort-by').value;
+    try {
+        await fetch(`/api/playlists/${pl.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ smart_sort: sortBy }),
+        });
+        pl.smart_sort = sortBy;
+        const resp = await fetch(`/api/playlists/${pl.id}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            state.playlists.activeItems = data.items || [];
+            renderPlaylistTracks();
+        }
+    } catch (e) {
+        console.error('Failed to update smart sort', e);
+    }
+}
+
+async function toggleSmartSortOrder() {
+    const pl = state.playlists.activePlaylist;
+    if (!pl) return;
+    const newOrder = (pl.smart_order || 'desc') === 'desc' ? 'asc' : 'desc';
+    try {
+        await fetch(`/api/playlists/${pl.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ smart_order: newOrder }),
+        });
+        pl.smart_order = newOrder;
+        $('smart-sort-order').innerHTML = newOrder === 'desc' ? '&#9660;' : '&#9650;';
+        const resp = await fetch(`/api/playlists/${pl.id}`);
+        if (resp.ok) {
+            const data = await resp.json();
+            state.playlists.activeItems = data.items || [];
+            renderPlaylistTracks();
+        }
+    } catch (e) {
+        console.error('Failed to toggle smart sort order', e);
+    }
+}
+
+function renderPlaylistTracks() {
+    const container = $('playlist-tracks');
+    container.innerHTML = '';
+    const items = state.playlists.activeItems;
+    const pl = state.playlists.activePlaylist;
+    const isManual = pl && pl.type === 'manual';
+
+    if (items.length === 0) {
+        $('no-tracks').hidden = false;
+        return;
+    }
+    $('no-tracks').hidden = true;
+
+    for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const el = document.createElement('div');
+        el.className = 'playlist-track';
+        el.dataset.downloadId = item.id;
+        const isPlaying = state.player.playlistId === state.playlists.activeId &&
+                          state.player.currentIndex === i;
+        if (isPlaying) el.classList.add('playing');
+
+        const dragHandle = isManual
+            ? `<span class="drag-handle" draggable="true">&#9776;</span>`
+            : '';
+        const removeBtn = isManual
+            ? `<button class="track-remove" onclick="removeTrack('${item.id}')" title="Remove">&times;</button>`
+            : '';
+        const thumbHtml = item.thumbnail
+            ? `<img class="track-thumb" src="${item.thumbnail}" alt="">`
+            : `<div class="track-thumb"></div>`;
+
+        el.innerHTML = `
+            ${dragHandle}
+            <span class="track-num">${i + 1}</span>
+            ${thumbHtml}
+            <div class="track-info">
+                <span class="track-title" title="${escHtml(item.title || item.url || '')}">${escHtml(item.title || 'Untitled')}</span>
+            </div>
+            <span class="track-duration">${formatDuration(item.duration)}</span>
+            ${removeBtn}
+        `;
+
+        // Click to play
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('.drag-handle') || e.target.closest('.track-remove')) return;
+            playFromIndex(i);
+        });
+
+        container.appendChild(el);
+    }
+
+    if (isManual) initDragReorder();
+}
+
+function backToPlaylistList() {
+    state.playlists.activeId = null;
+    state.playlists.activePlaylist = null;
+    state.playlists.activeItems = [];
+    $('playlists-list-view').hidden = false;
+    $('playlist-detail-view').hidden = true;
+    loadPlaylists();
+}
+
+async function removeTrack(downloadId) {
+    const plId = state.playlists.activeId;
+    if (!plId) return;
+    try {
+        await fetch(`/api/playlists/${plId}/items/${downloadId}`, { method: 'DELETE' });
+        state.playlists.activeItems = state.playlists.activeItems.filter(i => i.id !== downloadId);
+        renderPlaylistTracks();
+    } catch (e) {
+        console.error('Failed to remove track', e);
+    }
+}
+
+async function deletePlaylist(playlistId) {
+    if (!confirm('Delete this playlist?')) return;
+    try {
+        await fetch(`/api/playlists/${playlistId}`, { method: 'DELETE' });
+        if (state.playlists.activeId === playlistId) backToPlaylistList();
+        else loadPlaylists();
+    } catch (e) {
+        console.error('Failed to delete playlist', e);
+    }
+}
+
+// Create Playlist Modal
+
+function openCreatePlaylistModal() {
+    $('create-playlist-modal').hidden = false;
+    $('new-playlist-name').value = '';
+    $('new-playlist-name').focus();
+    document.querySelector('input[name="playlist-type"][value="manual"]').checked = true;
+    toggleSmartOptions();
+    renderSmartCreateTags();
+}
+
+function closeCreatePlaylistModal() {
+    $('create-playlist-modal').hidden = true;
+}
+
+function toggleSmartOptions() {
+    const isSmart = document.querySelector('input[name="playlist-type"]:checked').value === 'smart';
+    $('smart-options').hidden = !isSmart;
+}
+
+function renderSmartCreateTags() {
+    const container = $('smart-create-tags');
+    container._selectedTags = container._selectedTags || new Set();
+    let html = '';
+    for (const t of state.tags) {
+        const active = container._selectedTags.has(t.id);
+        const style = active
+            ? `background:${t.color}; border-color:${t.color}; color:#fff`
+            : `background:${t.color}20; color:${t.color}; border-color:${t.color}`;
+        html += `<span class="tag-filter-chip ${active ? 'active' : ''}" style="${style}"
+                       onclick="toggleSmartCreateTag(${t.id})">${escHtml(t.name)}</span>`;
+    }
+    container.innerHTML = html;
+}
+
+function toggleSmartCreateTag(tagId) {
+    const container = $('smart-create-tags');
+    if (!container._selectedTags) container._selectedTags = new Set();
+    if (container._selectedTags.has(tagId)) container._selectedTags.delete(tagId);
+    else container._selectedTags.add(tagId);
+    renderSmartCreateTags();
+}
+
+async function confirmCreatePlaylist() {
+    const name = $('new-playlist-name').value.trim();
+    if (!name) { alert('Please enter a name'); return; }
+    const type = document.querySelector('input[name="playlist-type"]:checked').value;
+    const body = { name, type };
+    if (type === 'smart') {
+        const container = $('smart-create-tags');
+        const tagIds = container._selectedTags ? [...container._selectedTags] : [];
+        body.smart_tag_ids = tagIds.join(',');
+    }
+    try {
+        const resp = await fetch('/api/playlists', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || 'Failed to create playlist');
+            return;
+        }
+        closeCreatePlaylistModal();
+        $('smart-create-tags')._selectedTags = new Set();
+        loadPlaylists();
+    } catch (e) {
+        console.error('Failed to create playlist', e);
+    }
+}
+
+// Add Tracks Modal
+
+let _addTracksCandidates = [];
+let _addTracksSelected = new Set();
+
+function openAddToPlaylistModal() {
+    $('add-tracks-modal').hidden = false;
+    $('add-tracks-search').value = '';
+    _addTracksSelected.clear();
+    searchPlaylistCandidates('');
+}
+
+function closeAddTracksModal() {
+    $('add-tracks-modal').hidden = true;
+}
+
+async function searchPlaylistCandidates(query) {
+    let url = `/api/downloads?limit=100&offset=0&status=done`;
+    if (query) url += `&search=${encodeURIComponent(query)}`;
+    try {
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        _addTracksCandidates = await resp.json();
+        renderPlaylistCandidates();
+    } catch (e) {
+        console.error('Failed to search candidates', e);
+    }
+}
+
+function renderPlaylistCandidates() {
+    const container = $('playlist-candidates-list');
+    const existingIds = new Set(state.playlists.activeItems.map(i => i.id));
+    const candidates = _addTracksCandidates.filter(c => !existingIds.has(c.id));
+
+    if (candidates.length === 0) {
+        container.innerHTML = '<p class="muted" style="padding:12px">No matching files</p>';
+        return;
+    }
+
+    container.innerHTML = candidates.map(c => {
+        const checked = _addTracksSelected.has(c.id) ? 'checked' : '';
+        const thumbHtml = c.thumbnail
+            ? `<img class="cand-thumb" src="${c.thumbnail}" alt="">`
+            : `<div class="cand-thumb"></div>`;
+        return `<label class="candidate-item">
+            <input type="checkbox" ${checked} onchange="toggleCandidateSelect('${c.id}', this.checked)">
+            ${thumbHtml}
+            <span class="cand-title">${escHtml(c.title || c.url || 'Untitled')}</span>
+            <span class="cand-duration">${formatDuration(c.duration)}</span>
+        </label>`;
+    }).join('');
+}
+
+function toggleCandidateSelect(id, checked) {
+    if (checked) _addTracksSelected.add(id);
+    else _addTracksSelected.delete(id);
+}
+
+async function confirmAddToPlaylist() {
+    const plId = state.playlists.activeId;
+    if (!plId || _addTracksSelected.size === 0) return;
+
+    for (const dlId of _addTracksSelected) {
+        try {
+            await fetch(`/api/playlists/${plId}/items`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ download_id: dlId }),
+            });
+        } catch (e) {
+            console.error('Failed to add track', dlId, e);
+        }
+    }
+
+    closeAddTracksModal();
+    _addTracksSelected.clear();
+    // Reload playlist detail
+    openPlaylistDetail(plId);
+}
+
+// M3U / Copy URL
+
+function downloadCurrentM3U() {
+    const plId = state.playlists.activeId;
+    if (plId) window.open(`/api/playlists/${plId}/m3u`);
+}
+
+function copyPlaylistUrl(plId) {
+    const url = `${location.origin}/api/playlists/${plId}/m3u`;
+    navigator.clipboard.writeText(url).then(() => {
+        // Brief visual feedback could go here
+    }).catch(e => console.error('Failed to copy', e));
+}
+
+function copyCurrentPlaylistUrl() {
+    const plId = state.playlists.activeId;
+    if (plId) copyPlaylistUrl(plId);
+}
+
+// ===== Drag & Drop Reorder =====
+
+function initDragReorder() {
+    const container = $('playlist-tracks');
+    let dragEl = null;
+
+    container.addEventListener('dragstart', (e) => {
+        const handle = e.target.closest('.drag-handle');
+        if (!handle) { e.preventDefault(); return; }
+        dragEl = handle.closest('.playlist-track');
+        if (!dragEl) return;
+        dragEl.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+    });
+
+    container.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (!dragEl) return;
+        const afterEl = getDragAfterElement(container, e.clientY);
+        if (afterEl) container.insertBefore(dragEl, afterEl);
+        else container.appendChild(dragEl);
+    });
+
+    container.addEventListener('dragend', () => {
+        if (!dragEl) return;
+        dragEl.classList.remove('dragging');
+        dragEl = null;
+        saveDragOrder();
+    });
+}
+
+function getDragAfterElement(container, y) {
+    const elements = [...container.querySelectorAll('.playlist-track:not(.dragging)')];
+    return elements.reduce((closest, child) => {
+        const box = child.getBoundingClientRect();
+        const offset = y - box.top - box.height / 2;
+        if (offset < 0 && offset > closest.offset) {
+            return { offset, element: child };
+        }
+        return closest;
+    }, { offset: Number.NEGATIVE_INFINITY }).element || null;
+}
+
+async function saveDragOrder() {
+    const container = $('playlist-tracks');
+    const ids = [...container.querySelectorAll('.playlist-track')].map(el => el.dataset.downloadId);
+    const plId = state.playlists.activeId;
+    if (!plId) return;
+
+    // Update track numbers visually
+    container.querySelectorAll('.playlist-track').forEach((el, i) => {
+        const num = el.querySelector('.track-num');
+        if (num) num.textContent = i + 1;
+    });
+
+    // Update state
+    const itemMap = {};
+    for (const item of state.playlists.activeItems) itemMap[item.id] = item;
+    state.playlists.activeItems = ids.map(id => itemMap[id]).filter(Boolean);
+
+    try {
+        await fetch(`/api/playlists/${plId}/reorder`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids }),
+        });
+    } catch (e) {
+        console.error('Failed to save order', e);
+    }
+}
+
+// ===== Audio Player =====
+
+function getAudioEl() { return $('player-audio'); }
+
+async function playPlaylist(playlistId) {
+    try {
+        const resp = await fetch(`/api/playlists/${playlistId}`);
+        if (!resp.ok) return;
+        const pl = await resp.json();
+        const items = pl.items || [];
+        if (items.length === 0) return;
+
+        state.player.playlistId = playlistId;
+        state.player.items = items;
+        state.player.currentIndex = 0;
+        playTrack(0);
+    } catch (e) {
+        console.error('Failed to play playlist', e);
+    }
+}
+
+function playCurrentPlaylist() {
+    const plId = state.playlists.activeId;
+    if (plId) playPlaylist(plId);
+}
+
+function playFromIndex(index) {
+    const plId = state.playlists.activeId;
+    if (!plId) return;
+    // If different playlist, load items first
+    if (state.player.playlistId !== plId) {
+        state.player.playlistId = plId;
+        state.player.items = [...state.playlists.activeItems];
+    }
+    state.player.currentIndex = index;
+    playTrack(index);
+}
+
+function playTrack(index) {
+    const items = state.player.items;
+    if (index < 0 || index >= items.length) return;
+
+    state.player.currentIndex = index;
+    state.player.playing = true;
+
+    const item = items[index];
+    const audio = getAudioEl();
+    if (!item.file_name) return;
+
+    audio.src = `/files/${encodeURIComponent(item.file_name)}`;
+    audio.play().catch(e => console.error('Playback error', e));
+
+    $('player-bar').hidden = false;
+    document.body.classList.add('player-active');
+    updatePlayerUI();
+    highlightCurrentTrack();
+}
+
+function updatePlayerUI() {
+    const item = state.player.items[state.player.currentIndex];
+    if (!item) return;
+    $('player-title').textContent = item.title || 'Untitled';
+
+    const playIcon = $('player-play-icon');
+    if (state.player.playing) {
+        playIcon.innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+    } else {
+        playIcon.innerHTML = '<polygon points="5,3 19,12 5,21"/>';
+    }
+}
+
+function highlightCurrentTrack() {
+    document.querySelectorAll('.playlist-track.playing').forEach(el => el.classList.remove('playing'));
+    if (state.player.playlistId === state.playlists.activeId) {
+        const tracks = $('playlist-tracks')?.querySelectorAll('.playlist-track') || [];
+        if (tracks[state.player.currentIndex]) {
+            tracks[state.player.currentIndex].classList.add('playing');
+        }
+    }
+}
+
+function playerToggle() {
+    const audio = getAudioEl();
+    if (audio.paused) {
+        audio.play().catch(() => {});
+        state.player.playing = true;
+    } else {
+        audio.pause();
+        state.player.playing = false;
+    }
+    updatePlayerUI();
+}
+
+function playerNext() {
+    const next = state.player.currentIndex + 1;
+    if (next < state.player.items.length) {
+        playTrack(next);
+    }
+}
+
+function playerPrev() {
+    const audio = getAudioEl();
+    // If > 3 seconds into track, restart; otherwise go to previous
+    if (audio.currentTime > 3) {
+        audio.currentTime = 0;
+        return;
+    }
+    const prev = state.player.currentIndex - 1;
+    if (prev >= 0) {
+        playTrack(prev);
+    }
+}
+
+function playerSeek(value) {
+    const audio = getAudioEl();
+    if (audio.duration) {
+        audio.currentTime = (value / 100) * audio.duration;
+    }
+}
+
+function playerSetVolume(value) {
+    getAudioEl().volume = parseFloat(value);
+}
+
+function formatPlayerTime(secs) {
+    if (!secs || !isFinite(secs)) return '0:00';
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function initPlayerEvents() {
+    const audio = getAudioEl();
+
+    audio.addEventListener('timeupdate', () => {
+        if (!audio.duration) return;
+        const pct = (audio.currentTime / audio.duration) * 100;
+        $('player-seek').value = pct;
+        $('player-current-time').textContent = formatPlayerTime(audio.currentTime);
+        $('player-total-time').textContent = formatPlayerTime(audio.duration);
+    });
+
+    audio.addEventListener('ended', () => {
+        state.player.playing = false;
+        playerNext();
+    });
+
+    audio.addEventListener('play', () => {
+        state.player.playing = true;
+        updatePlayerUI();
+    });
+
+    audio.addEventListener('pause', () => {
+        state.player.playing = false;
+        updatePlayerUI();
+    });
+}
+
 // ===== Init =====
 
 async function loadVersion() {
@@ -1203,6 +1896,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadHistory();
     loadExtractors();
     initRouter();
+    initPlayerEvents();
 
     const urlInput = $('url-input');
     urlInput.addEventListener('keydown', (e) => {
