@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -138,6 +139,13 @@ async def consume_progress(job_id: str, queue: asyncio.Queue,
                         file_size=data.get('file_size'),
                         completed_at=time.time(),
                     )
+                elif status == 'cancelled':
+                    await update_download(
+                        db, job_id,
+                        status='cancelled',
+                        error_msg=data.get('error_msg'),
+                        completed_at=time.time(),
+                    )
                 elif status == 'error':
                     await update_download(
                         db, job_id,
@@ -167,6 +175,7 @@ async def lifespan(app: FastAPI):
     app.state.db = db
     app.state.ws_manager = ConnectionManager()
     app.state.active_tasks: dict[str, asyncio.Task] = {}
+    app.state.cancel_events: dict[str, threading.Event] = {}
 
     cleanup_task = None
     if CLEANUP_HOURS > 0:
@@ -255,18 +264,37 @@ async def start_download(req: DownloadRequest):
 
     loop = asyncio.get_event_loop()
     progress_queue: asyncio.Queue = asyncio.Queue()
+    cancel_event = threading.Event()
 
     # Start worker thread
     loop.run_in_executor(
         executor,
-        run_download, job_id, req.url, req.format_preset, loop, progress_queue,
+        run_download, job_id, req.url, req.format_preset, loop, progress_queue, cancel_event,
     )
 
     # Start async consumer
-    task = asyncio.create_task(consume_progress(job_id, progress_queue, db, ws_manager))
+    async def _consume_and_cleanup():
+        await consume_progress(job_id, progress_queue, db, ws_manager)
+        app.state.active_tasks.pop(job_id, None)
+        app.state.cancel_events.pop(job_id, None)
+
+    task = asyncio.create_task(_consume_and_cleanup())
     app.state.active_tasks[job_id] = task
+    app.state.cancel_events[job_id] = cancel_event
 
     return {'job_id': job_id, 'status': 'queued'}
+
+
+@app.post('/api/downloads/{job_id}/cancel')
+async def cancel_download(job_id: str):
+    cancel_event = app.state.cancel_events.get(job_id)
+    if not cancel_event:
+        row = await get_download(app.state.db, job_id)
+        if not row:
+            raise HTTPException(status_code=404, detail='Download not found')
+        raise HTTPException(status_code=400, detail='Download is not active')
+    cancel_event.set()
+    return {'status': 'cancelling'}
 
 
 @app.get('/api/downloads')

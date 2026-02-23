@@ -396,6 +396,10 @@ header h1 {
     border-left-color: var(--merging);
 }
 
+.job-card.status-cancelled {
+    border-left-color: var(--text-muted);
+}
+
 .job-card-header {
     display: flex;
     justify-content: space-between;
@@ -468,6 +472,16 @@ header h1 {
 .job-card-actions .download-link {
     background: var(--success);
     border-color: var(--success);
+    color: #fff;
+}
+
+.job-card-actions .cancel-btn {
+    border-color: var(--error);
+    color: var(--error);
+}
+
+.job-card-actions .cancel-btn:hover {
+    background: var(--error);
     color: #fff;
 }
 

@@ -274,7 +274,8 @@ function createActiveJob(jobId, info, format) {
         </div>
         <span class="progress-text" data-field="progress">Waiting...</span>
         <div class="job-error" data-field="error" hidden></div>
-        <div class="job-card-actions" data-field="actions" hidden>
+        <div class="job-card-actions">
+            <button class="cancel-btn" data-field="cancel-btn" onclick="cancelJob('${jobId}')">Cancel</button>
             <a class="download-link" data-field="download-link" href="#" hidden>Download File</a>
         </div>
     `;
@@ -318,29 +319,42 @@ function updateActiveJob(jobId, msg) {
         }
     }
 
-    if (msg.type === 'complete' && msg.status === 'done') {
-        get('status').textContent = 'done';
-        get('bar').style.width = '100%';
-        get('progress').textContent = `Done${msg.file_size ? ' — ' + formatBytes(msg.file_size) : ''}`;
-        card.className = 'job-card status-done';
+    if (msg.type === 'complete') {
+        get('cancel-btn').hidden = true;
 
-        if (msg.file_name) {
-            const link = get('download-link');
-            link.href = `/files/${encodeURIComponent(msg.file_name)}`;
-            link.hidden = false;
-            get('actions').hidden = false;
+        if (msg.status === 'done') {
+            get('status').textContent = 'done';
+            get('bar').style.width = '100%';
+            get('progress').textContent = `Done${msg.file_size ? ' — ' + formatBytes(msg.file_size) : ''}`;
+            card.className = 'job-card status-done';
+
+            if (msg.file_name) {
+                const link = get('download-link');
+                link.href = `/files/${encodeURIComponent(msg.file_name)}`;
+                link.hidden = false;
+            }
+
+            loadHistory();
+        } else if (msg.status === 'cancelled') {
+            get('status').textContent = 'cancelled';
+            get('progress').textContent = 'Cancelled';
+            card.className = 'job-card status-cancelled';
+        } else if (msg.status === 'error') {
+            get('status').textContent = 'error';
+            get('progress').textContent = 'Failed';
+            card.className = 'job-card status-error';
+            const errEl = get('error');
+            errEl.textContent = msg.error_msg || 'Unknown error';
+            errEl.hidden = false;
         }
-
-        loadHistory();
     }
+}
 
-    if (msg.type === 'complete' && msg.status === 'error') {
-        get('status').textContent = 'error';
-        get('progress').textContent = 'Failed';
-        card.className = 'job-card status-error';
-        const errEl = get('error');
-        errEl.textContent = msg.error_msg || 'Unknown error';
-        errEl.hidden = false;
+async function cancelJob(jobId) {
+    try {
+        await fetch(`/api/downloads/${jobId}/cancel`, { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to cancel', e);
     }
 }
 

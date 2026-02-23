@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -156,14 +157,24 @@ def extract_info_only(url: str) -> dict:
         }
 
 
+class CancelledError(Exception):
+    pass
+
+
 def run_download(job_id: str, url: str, format_preset: str,
                  loop: asyncio.AbstractEventLoop,
-                 progress_queue: asyncio.Queue) -> None:
+                 progress_queue: asyncio.Queue,
+                 cancel_event: threading.Event | None = None) -> None:
     """Run a download in a worker thread. Sends progress via queue."""
     preset = FORMAT_PRESETS[format_preset]
     ydl_logger = JobLogger()
 
+    def _check_cancel():
+        if cancel_event and cancel_event.is_set():
+            raise CancelledError('Download cancelled by user')
+
     def progress_hook(d: dict) -> None:
+        _check_cancel()
         total = d.get('total_bytes') or d.get('total_bytes_estimate')
         payload: dict = {
             'job_id': job_id,
@@ -222,6 +233,7 @@ def run_download(job_id: str, url: str, format_preset: str,
     })
 
     try:
+        _check_cancel()
         with YoutubeDL(params) as ydl:
             info = ydl.extract_info(url, download=True)
 
@@ -261,6 +273,16 @@ def run_download(job_id: str, url: str, format_preset: str,
             'duration': safe_info.get('duration'),
         })
 
+    except CancelledError:
+        logger.info('Download cancelled for job %s', job_id)
+        # Clean up partial file
+        _cleanup_partial(job_id, DOWNLOAD_DIR)
+        loop.call_soon_threadsafe(progress_queue.put_nowait, {
+            'job_id': job_id,
+            'type': 'complete',
+            'status': 'cancelled',
+            'error_msg': 'Cancelled by user',
+        })
     except Exception as e:
         logger.exception('Download failed for job %s', job_id)
         loop.call_soon_threadsafe(progress_queue.put_nowait, {
@@ -269,3 +291,16 @@ def run_download(job_id: str, url: str, format_preset: str,
             'status': 'error',
             'error_msg': str(e),
         })
+
+
+def _cleanup_partial(job_id: str, download_dir: str) -> None:
+    """Remove partial/temp files left by a cancelled download."""
+    try:
+        for fname in os.listdir(download_dir):
+            if fname.endswith('.part') or fname.endswith('.ytdl'):
+                try:
+                    os.remove(os.path.join(download_dir, fname))
+                except OSError:
+                    pass
+    except OSError:
+        pass
