@@ -848,6 +848,10 @@ header h1 {
     justify-content: center;
 }
 
+.modal-overlay[hidden] {
+    display: none !important;
+}
+
 .modal-content {
     background: var(--surface);
     border: 1px solid var(--border);
