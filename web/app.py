@@ -356,15 +356,24 @@ async def cancel_download(job_id: str):
 async def get_downloads(limit: int = Query(50, ge=1, le=200),
                         offset: int = Query(0, ge=0),
                         tag_id: int | None = Query(None),
+                        tag_ids: str | None = Query(None),
                         search: str | None = Query(None),
                         sort_by: str = Query('created_at'),
                         sort_order: str = Query('desc'),
                         pinned_only: bool = Query(False),
                         format_preset: str | None = Query(None),
                         status: str | None = Query(None)):
+    # Parse comma-separated tag_ids
+    parsed_tag_ids = None
+    if tag_ids:
+        try:
+            parsed_tag_ids = [int(x) for x in tag_ids.split(',') if x.strip()]
+        except ValueError:
+            pass
+
     rows = await list_downloads(
         app.state.db, limit, offset,
-        tag_id=tag_id, search=search,
+        tag_id=tag_id, tag_ids=parsed_tag_ids, search=search,
         sort_by=sort_by, sort_order=sort_order,
         pinned_only=pinned_only, format_preset=format_preset,
         status=status,

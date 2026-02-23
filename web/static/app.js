@@ -22,11 +22,7 @@ const state = {
         search: '',
         sortBy: 'created_at',
         sortOrder: 'desc',
-        tagId: null,
-        pinnedOnly: false,
-        formatPreset: null,
-        status: null,
-        activeFilter: 'all', // 'all' | 'pinned' | 'audio_mp3' | 'video'
+        tagIds: new Set(),  // multi-select tag filter
         selected: new Set(),
     },
 };
@@ -182,40 +178,6 @@ function toggleServicesSection() {
     const arrow = $('services-arrow');
     body.hidden = !state.servicesOpen;
     arrow.classList.toggle('open', state.servicesOpen);
-}
-
-function renderSidebarTags() {
-    const list = $('sidebar-tag-list');
-    if (!list) return;
-
-    let html = '';
-    for (const t of state.tags) {
-        const active = state.activeTagFilter === t.id ? ' active' : '';
-        html += `<li class="sidebar-tag-item${active}" onclick="sidebarTagClick(${t.id})">
-            <span class="sidebar-tag-dot" style="background:${t.color}"></span>
-            <span class="sidebar-tag-name">${escHtml(t.name)}</span>
-            <span class="sidebar-tag-count">${t.count || 0}</span>
-        </li>`;
-    }
-    list.innerHTML = html;
-}
-
-function sidebarTagClick(tagId) {
-    if (state.activeTagFilter === tagId) {
-        state.activeTagFilter = null;
-    } else {
-        state.activeTagFilter = tagId;
-    }
-    renderSidebarTags();
-    renderTagFilter();
-
-    if (state.currentView === 'home') {
-        loadHistory();
-    }
-    if (state.currentView === 'library') {
-        state.library.tagId = state.activeTagFilter;
-        loadLibrary();
-    }
 }
 
 // ===== Extractors (Services) =====
@@ -558,7 +520,6 @@ async function loadTags() {
         if (!resp.ok) return;
         state.tags = await resp.json();
         renderTagFilter();
-        renderSidebarTags();
         renderLibraryTagFilters();
     } catch (e) {
         console.error('Failed to load tags', e);
@@ -588,14 +549,7 @@ function renderTagFilter() {
 function filterByTag(tagId) {
     state.activeTagFilter = tagId;
     renderTagFilter();
-    renderSidebarTags();
     loadHistory();
-
-    // Also update library tag filter
-    if (state.currentView === 'library') {
-        state.library.tagId = tagId;
-        loadLibrary();
-    }
 }
 
 // ===== Tag Assignment Popover =====
@@ -944,14 +898,8 @@ function buildLibraryUrl() {
     url += `&sort_by=${lib.sortBy}&sort_order=${lib.sortOrder}`;
     url += `&status=done`; // Library only shows completed downloads
 
-    if (lib.tagId !== null) url += `&tag_id=${lib.tagId}`;
+    if (lib.tagIds.size > 0) url += `&tag_ids=${[...lib.tagIds].join(',')}`;
     if (lib.search) url += `&search=${encodeURIComponent(lib.search)}`;
-    if (lib.pinnedOnly) url += `&pinned_only=true`;
-    if (lib.activeFilter === 'video') {
-        url += `&format_preset=video`;
-    } else if (lib.formatPreset) {
-        url += `&format_preset=${encodeURIComponent(lib.formatPreset)}`;
-    }
 
     return url;
 }
@@ -1060,63 +1008,41 @@ function renderLibraryTagFilters() {
     const container = $('library-tag-filters');
     if (!container) return;
 
-    if (state.tags.length === 0) {
-        container.innerHTML = '';
-        return;
-    }
-
     const lib = state.library;
-    let html = `<span class="tag-filter-chip ${lib.tagId === null ? 'active' : ''}"
-                     onclick="setLibraryTagFilter(null)">All Tags</span>`;
+
+    // "All" chip — active when no tags selected
+    let html = `<span class="tag-filter-chip ${lib.tagIds.size === 0 ? 'active' : ''}"
+                     onclick="clearLibraryTagFilter()">All</span>`;
+
     for (const t of state.tags) {
-        const active = lib.tagId === t.id ? 'active' : '';
-        const style = lib.tagId === t.id
+        const active = lib.tagIds.has(t.id);
+        const style = active
             ? `background:${t.color}; border-color:${t.color}; color:#fff`
             : '';
-        html += `<span class="tag-filter-chip ${active}" style="${style}"
-                       onclick="setLibraryTagFilter(${t.id})">${escHtml(t.name)} (${t.count || 0})</span>`;
+        html += `<span class="tag-filter-chip ${active ? 'active' : ''}" style="${style}"
+                       onclick="toggleLibraryTagFilter(${t.id})">${escHtml(t.name)} (${t.count || 0})</span>`;
     }
+
+    // Create tag button
+    html += `<button class="tag-manage-btn" onclick="openTagManager()">+ New Tag</button>`;
+
     container.innerHTML = html;
 }
 
-function setLibraryTagFilter(tagId) {
-    state.library.tagId = tagId;
-    state.activeTagFilter = tagId;
-    renderSidebarTags();
+function toggleLibraryTagFilter(tagId) {
+    const lib = state.library;
+    if (lib.tagIds.has(tagId)) {
+        lib.tagIds.delete(tagId);
+    } else {
+        lib.tagIds.add(tagId);
+    }
     renderLibraryTagFilters();
     loadLibrary();
 }
 
-// Library Filters
-
-function setLibraryFilter(type, value) {
-    const lib = state.library;
-
-    // Reset
-    lib.pinnedOnly = false;
-    lib.formatPreset = null;
-
-    if (type === 'pinned') {
-        lib.pinnedOnly = true;
-        lib.activeFilter = 'pinned';
-    } else if (type === 'format') {
-        if (value === 'audio_mp3') {
-            lib.formatPreset = 'audio_mp3';
-            lib.activeFilter = 'audio_mp3';
-        } else if (value === 'video') {
-            // Video includes best_video, video_720p, video_1080p — we filter on the JS side
-            // or just use best_video; for now we don't filter by format on video (show all non-audio)
-            lib.activeFilter = 'video';
-        }
-    } else {
-        lib.activeFilter = 'all';
-    }
-
-    // Update button states
-    document.querySelectorAll('.filter-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.filter === lib.activeFilter);
-    });
-
+function clearLibraryTagFilter() {
+    state.library.tagIds.clear();
+    renderLibraryTagFilters();
     loadLibrary();
 }
 

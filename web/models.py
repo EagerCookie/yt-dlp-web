@@ -133,6 +133,7 @@ async def get_download(db: aiosqlite.Connection, job_id: str) -> dict | None:
 
 async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
                          offset: int = 0, tag_id: int | None = None,
+                         tag_ids: list[int] | None = None,
                          search: str | None = None,
                          sort_by: str = 'created_at',
                          sort_order: str = 'desc',
@@ -148,7 +149,13 @@ async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
     conditions = []
     params: list = []
 
-    if tag_id is not None:
+    # Multiple tag IDs (OR logic — match any of the selected tags)
+    if tag_ids:
+        placeholders = ','.join('?' * len(tag_ids))
+        conditions.append(
+            f'd.id IN (SELECT download_id FROM download_tags WHERE tag_id IN ({placeholders}))')
+        params.extend(tag_ids)
+    elif tag_id is not None:
         conditions.append('d.id IN (SELECT download_id FROM download_tags WHERE tag_id = ?)')
         params.append(tag_id)
 

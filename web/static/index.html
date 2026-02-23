@@ -27,17 +27,6 @@
 
             <!-- Sidebar Body (visible when expanded) -->
             <div class="sidebar-body" id="sidebar-body">
-                <!-- Tags Section -->
-                <div class="sidebar-section sidebar-tags">
-                    <div class="sidebar-section-header">
-                        <span>Tags</span>
-                        <button class="btn-icon" onclick="openTagManager()" title="Manage tags">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-                        </button>
-                    </div>
-                    <ul class="sidebar-tag-list" id="sidebar-tag-list"></ul>
-                </div>
-
                 <!-- Services Section (collapsed by default) -->
                 <div class="sidebar-section sidebar-services">
                     <button class="sidebar-section-toggle" onclick="toggleServicesSection()">
@@ -146,14 +135,9 @@
                         </div>
                     </header>
 
-                    <!-- Filters bar -->
+                    <!-- Tag filters + Sort -->
                     <div class="library-filters">
-                        <div class="filter-group">
-                            <button class="filter-btn active" data-filter="all" onclick="setLibraryFilter('status', null)">All</button>
-                            <button class="filter-btn" data-filter="pinned" onclick="setLibraryFilter('pinned', true)">Pinned</button>
-                            <button class="filter-btn" data-filter="audio_mp3" onclick="setLibraryFilter('format', 'audio_mp3')">Audio</button>
-                            <button class="filter-btn" data-filter="video" onclick="setLibraryFilter('format', 'video')">Video</button>
-                        </div>
+                        <div class="library-tag-filters" id="library-tag-filters"></div>
                         <div class="sort-group">
                             <label>Sort:</label>
                             <select id="library-sort-by" onchange="onLibrarySortChange()">
@@ -165,9 +149,6 @@
                             <button class="sort-order-btn" id="library-sort-order" onclick="toggleLibrarySortOrder()" title="Toggle sort order">&#9660;</button>
                         </div>
                     </div>
-
-                    <!-- Tag filter chips -->
-                    <div class="library-tag-filters" id="library-tag-filters"></div>
 
                     <!-- Bulk actions bar (hidden until selection) -->
                     <div class="bulk-actions" id="bulk-actions" hidden>

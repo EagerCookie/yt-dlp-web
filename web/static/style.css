@@ -160,18 +160,6 @@ body {
     padding: 12px;
 }
 
-.sidebar-section-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 8px;
-}
-
 .btn-icon {
     background: none;
     border: none;
@@ -186,56 +174,6 @@ body {
 .btn-icon:hover {
     color: var(--accent);
     background: var(--surface2);
-}
-
-/* Sidebar Tag List */
-
-.sidebar-tag-list {
-    list-style: none;
-}
-
-.sidebar-tag-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 8px;
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 13px;
-    transition: background 0.15s;
-}
-
-.sidebar-tag-item:hover {
-    background: var(--surface2);
-}
-
-.sidebar-tag-item.active {
-    background: rgba(59, 130, 246, 0.15);
-    color: var(--accent);
-}
-
-.sidebar-tag-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-}
-
-.sidebar-tag-name {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.sidebar-tag-count {
-    font-size: 11px;
-    color: var(--text-muted);
-    background: var(--surface2);
-    padding: 0 6px;
-    border-radius: 8px;
-    min-width: 20px;
-    text-align: center;
 }
 
 /* Sidebar Services */
@@ -1088,32 +1026,6 @@ header h1 {
     flex-wrap: wrap;
 }
 
-.filter-group {
-    display: flex;
-    gap: 6px;
-}
-
-.filter-btn {
-    font-size: 12px;
-    padding: 5px 14px;
-    border-radius: 16px;
-    border: 1px solid var(--border);
-    background: var(--surface2);
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.filter-btn:hover {
-    border-color: var(--accent);
-}
-
-.filter-btn.active {
-    background: var(--accent);
-    color: #fff;
-    border-color: var(--accent);
-}
-
 .sort-group {
     display: flex;
     align-items: center;
@@ -1155,7 +1067,8 @@ header h1 {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
-    margin-bottom: 12px;
+    flex: 1;
+    align-items: center;
 }
 
 .library-tag-filters:empty {
