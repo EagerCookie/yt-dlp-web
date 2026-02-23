@@ -208,6 +208,7 @@ app.mount('/static', StaticFiles(directory=static_dir), name='static')
 class DownloadRequest(BaseModel):
     url: str
     format_preset: str = 'best_video'
+    pinned: bool = False
 
 
 class TagCreate(BaseModel):
@@ -277,7 +278,7 @@ async def start_download(req: DownloadRequest):
     db = app.state.db
     ws_manager = app.state.ws_manager
 
-    await insert_download(db, job_id, req.url, req.format_preset)
+    await insert_download(db, job_id, req.url, req.format_preset, pinned=req.pinned)
 
     loop = asyncio.get_event_loop()
     progress_queue: asyncio.Queue = asyncio.Queue()

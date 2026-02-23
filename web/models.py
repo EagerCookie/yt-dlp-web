@@ -74,12 +74,12 @@ async def init_db(db: aiosqlite.Connection) -> None:
 # --- Downloads ---
 
 async def insert_download(db: aiosqlite.Connection, job_id: str, url: str,
-                          format_preset: str) -> None:
+                          format_preset: str, pinned: bool = False) -> None:
     now = time.time()
     await db.execute(
-        'INSERT INTO downloads (id, url, format_preset, status, created_at, updated_at) '
-        'VALUES (?, ?, ?, ?, ?, ?)',
-        (job_id, url, format_preset, 'queued', now, now),
+        'INSERT INTO downloads (id, url, format_preset, status, pinned, created_at, updated_at) '
+        'VALUES (?, ?, ?, ?, ?, ?, ?)',
+        (job_id, url, format_preset, 'queued', 1 if pinned else 0, now, now),
     )
     await db.commit()
 

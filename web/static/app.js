@@ -48,6 +48,17 @@ function formatDuration(secs) {
     return formatEta(secs);
 }
 
+function formatDate(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    const day = String(d.getDate()).padStart(2, '0');
+    const mon = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    const h = String(d.getHours()).padStart(2, '0');
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `${day}.${mon}.${year} ${h}:${m}`;
+}
+
 function formatPresetLabel(preset) {
     const labels = {
         best_video: 'Best Video',
@@ -240,6 +251,7 @@ async function startDownload() {
     if (!state.url) return;
 
     const format = document.querySelector('input[name="format"]:checked').value;
+    const pinned = $('pin-on-download')?.checked || false;
     const btn = $('download-btn');
     setLoading(btn, true);
     hideError();
@@ -248,7 +260,7 @@ async function startDownload() {
         const resp = await fetch('/api/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: state.url, format_preset: format }),
+            body: JSON.stringify({ url: state.url, format_preset: format, pinned }),
         });
         if (!resp.ok) {
             const err = await resp.json();
@@ -735,10 +747,19 @@ function renderHistory(items, append) {
 
         const addTagBtn = `<button class="add-tag-btn" onclick="openTagAssign('${item.id}', this)" title="Add tag">+</button>`;
 
+        // Meta info line: duration, date, source
+        const metaParts = [];
+        if (item.duration) metaParts.push(formatDuration(item.duration));
+        if (item.created_at) metaParts.push(formatDate(item.created_at));
+        const metaHtml = metaParts.length > 0
+            ? `<span class="h-meta">${metaParts.join(' &middot; ')}${item.url ? ` &middot; <a class="h-source" href="${escHtml(item.url)}" target="_blank" rel="noopener" title="${escHtml(item.url)}">source</a>` : ''}</span>`
+            : '';
+
         el.innerHTML = `
             ${thumbHtml}
             <div class="h-info">
                 <span class="h-title" title="${escHtml(item.title || item.url)}">${escHtml(item.title || item.url)}</span>
+                ${metaHtml}
                 <span class="h-tags">${tagsHtml}${addTagBtn}</span>
             </div>
             <span class="h-format">${formatPresetLabel(item.format_preset)}</span>

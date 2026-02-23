@@ -599,14 +599,50 @@ header h1 {
     border-left: 3px solid var(--warning);
 }
 
-/* History info wrapper (title + tags) */
+/* History info wrapper (title + meta + tags) */
 
 .history-item .h-info {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
+    gap: 3px;
+}
+
+.history-item .h-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.history-item .h-source {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.history-item .h-source:hover {
+    text-decoration: underline;
+}
+
+/* Download row (button + pin checkbox) */
+
+.download-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.pin-at-download {
+    display: flex;
+    align-items: center;
     gap: 4px;
+    font-size: 13px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.pin-at-download input[type="checkbox"] {
+    accent-color: var(--warning);
 }
 
 .history-item .h-info .h-title {

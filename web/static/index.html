@@ -75,7 +75,12 @@
                         </label>
                     </div>
 
-                    <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
+                    <div class="download-row">
+                        <button id="download-btn" class="btn-primary" onclick="startDownload()">Download</button>
+                        <label class="pin-at-download" title="Pin this file to prevent auto-cleanup">
+                            <input type="checkbox" id="pin-on-download"> Pin
+                        </label>
+                    </div>
                 </section>
 
                 <!-- Active Downloads -->

@@ -2,20 +2,28 @@
 
 ## Media Library Enhancements
 - [ ] Save thumbnail to disk on successful download (for offline navigation)
-- [ ] Show file duration in download history list
-- [ ] Store source URL in DB for each download (for re-downloading, linking back)
+- [x] Show file duration in download history list
+- [x] Show download date in history list (sortable in future)
+- [x] Store source URL in DB for each download (for re-downloading, linking back)
 
 ## Persistent Files
 - [x] Add "pin" / "keep" flag for downloads — pinned files are excluded from auto-cleanup
 - [x] UI toggle (star/pin icon) on each download in history
 - [x] Store `pinned` boolean in DB
 - [x] Cleanup task skips pinned files
+- [x] Option to pin file at download time (checkbox before starting download)
+  — prevents forgetting to pin and losing file to auto-cleanup
 
 ## Tags
 - [x] Add tag management for downloaded files (create, rename, delete tags)
 - [x] UI for assigning tags to downloads (multi-select)
 - [x] Store tags in DB (many-to-many: downloads <-> tags)
 - [x] Filter history by tags
+
+## UI / Side Panel
+- [ ] Rework side panel: move tag management into side panel as primary feature
+  — supported services list is informational only, should be secondary/collapsed
+- [ ] Future: sortable history (by date, name, size) with tag filters on the same page
 
 ## Playlists
 - [ ] Generate playlists based on tag filters (M3U/PLS format)
