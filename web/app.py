@@ -13,14 +13,21 @@ from pydantic import BaseModel
 
 from web.models import (
     DB_PATH,
+    add_tag_to_download,
+    create_tag,
     delete_download,
+    delete_tag,
     get_db,
     get_download,
     get_downloads_older_than,
     init_db,
     insert_download,
     list_downloads,
+    list_tags,
+    remove_tag_from_download,
+    toggle_pin,
     update_download,
+    update_tag,
 )
 from web.tasks import (
     DOWNLOAD_DIR,
@@ -203,6 +210,16 @@ class DownloadRequest(BaseModel):
     format_preset: str = 'best_video'
 
 
+class TagCreate(BaseModel):
+    name: str
+    color: str = '#3b82f6'
+
+
+class TagUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+
+
 # --- API endpoints ---
 
 @app.get('/')
@@ -299,8 +316,9 @@ async def cancel_download(job_id: str):
 
 @app.get('/api/downloads')
 async def get_downloads(limit: int = Query(50, ge=1, le=200),
-                        offset: int = Query(0, ge=0)):
-    rows = await list_downloads(app.state.db, limit, offset)
+                        offset: int = Query(0, ge=0),
+                        tag_id: int | None = Query(None)):
+    rows = await list_downloads(app.state.db, limit, offset, tag_id=tag_id)
     return rows
 
 
@@ -350,6 +368,70 @@ async def serve_file(filename: str):
         filename=filename,
         media_type='application/octet-stream',
     )
+
+
+# --- Pin ---
+
+@app.patch('/api/downloads/{job_id}/pin')
+async def toggle_pin_download(job_id: str):
+    row = await get_download(app.state.db, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail='Download not found')
+    new_state = await toggle_pin(app.state.db, job_id)
+    return {'pinned': new_state}
+
+
+# --- Tags ---
+
+@app.get('/api/tags')
+async def get_tags():
+    return await list_tags(app.state.db)
+
+
+@app.post('/api/tags')
+async def create_tag_endpoint(req: TagCreate):
+    name = req.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='Tag name cannot be empty')
+    try:
+        tag = await create_tag(app.state.db, name, req.color)
+        return tag
+    except Exception:
+        raise HTTPException(status_code=400, detail='Tag name already exists')
+
+
+@app.patch('/api/tags/{tag_id}')
+async def update_tag_endpoint(tag_id: int, req: TagUpdate):
+    fields = {}
+    if req.name is not None:
+        fields['name'] = req.name.strip()
+    if req.color is not None:
+        fields['color'] = req.color
+    if not fields:
+        raise HTTPException(status_code=400, detail='No fields to update')
+    await update_tag(app.state.db, tag_id, **fields)
+    return {'status': 'updated'}
+
+
+@app.delete('/api/tags/{tag_id}')
+async def delete_tag_endpoint(tag_id: int):
+    await delete_tag(app.state.db, tag_id)
+    return {'status': 'deleted'}
+
+
+@app.post('/api/downloads/{job_id}/tags/{tag_id}')
+async def assign_tag(job_id: str, tag_id: int):
+    row = await get_download(app.state.db, job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail='Download not found')
+    await add_tag_to_download(app.state.db, job_id, tag_id)
+    return {'status': 'added'}
+
+
+@app.delete('/api/downloads/{job_id}/tags/{tag_id}')
+async def unassign_tag(job_id: str, tag_id: int):
+    await remove_tag_from_download(app.state.db, job_id, tag_id)
+    return {'status': 'removed'}
 
 
 # --- WebSocket endpoints ---

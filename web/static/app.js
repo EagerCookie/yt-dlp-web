@@ -9,7 +9,14 @@ const state = {
     historyLimit: 50,
     extractors: [],   // [{name, description}, ...]
     panelOpen: false,
+    tags: [],              // [{id, name, color}, ...]
+    activeTagFilter: null, // tag_id or null for "all"
 };
+
+const TAG_COLORS = [
+    '#3b82f6', '#22c55e', '#ef4444', '#f59e0b', '#8b5cf6',
+    '#ec4899', '#06b6d4', '#f97316', '#6366f1', '#14b8a6',
+];
 
 // --- Helpers ---
 
@@ -49,6 +56,12 @@ function formatPresetLabel(preset) {
         video_1080p: '1080p',
     };
     return labels[preset] || preset;
+}
+
+function escHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
 }
 
 function $(id) { return document.getElementById(id); }
@@ -134,13 +147,11 @@ function checkUrlSupport(url) {
         return;
     }
 
-    // Try to extract hostname from URL
     let hostname = '';
     try {
         const parsed = new URL(url);
         hostname = parsed.hostname.replace(/^www\./, '').replace(/^m\./, '');
     } catch {
-        // Not a valid URL yet — hide warning
         warning.hidden = true;
         return;
     }
@@ -150,9 +161,7 @@ function checkUrlSupport(url) {
         return;
     }
 
-    // Check if any extractor name/description matches the hostname
     const hl = hostname.toLowerCase();
-    // Extract domain name without TLD for matching (e.g. "youtube" from "youtube.com")
     const domainParts = hl.split('.');
     const domainName = domainParts.length >= 2 ? domainParts[domainParts.length - 2] : hl;
 
@@ -210,7 +219,6 @@ function renderPreview() {
     $('preview-duration').textContent = info.duration ? `Duration: ${formatDuration(info.duration)}` : '';
     $('playlist-warning').hidden = !info.is_playlist;
 
-    // Show estimated sizes per preset
     const sizes = info.preset_sizes || {};
     document.querySelectorAll('.format-size').forEach(el => {
         const preset = el.dataset.preset;
@@ -372,7 +380,6 @@ function connectJobWS(jobId) {
     };
 
     ws.onclose = () => {
-        // Cleanup after a delay
         setTimeout(() => {
             if (state.activeJobs[jobId]?.data?.status === 'done' ||
                 state.activeJobs[jobId]?.data?.status === 'error') {
@@ -386,12 +393,278 @@ function connectJobWS(jobId) {
     };
 }
 
+// --- Pin ---
+
+async function togglePin(jobId) {
+    try {
+        const resp = await fetch(`/api/downloads/${jobId}/pin`, { method: 'PATCH' });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const el = $(`hist-${jobId}`);
+        if (el) {
+            const pinBtn = el.querySelector('.pin-btn');
+            if (pinBtn) {
+                pinBtn.classList.toggle('pinned', data.pinned);
+                pinBtn.title = data.pinned ? 'Unpin' : 'Pin';
+            }
+            el.classList.toggle('history-item-pinned', data.pinned);
+        }
+    } catch (e) {
+        console.error('Failed to toggle pin', e);
+    }
+}
+
+// --- Tags ---
+
+async function loadTags() {
+    try {
+        const resp = await fetch('/api/tags');
+        if (!resp.ok) return;
+        state.tags = await resp.json();
+        renderTagFilter();
+    } catch (e) {
+        console.error('Failed to load tags', e);
+    }
+}
+
+function renderTagFilter() {
+    const strip = $('tag-filter');
+    if (state.tags.length === 0) {
+        strip.hidden = true;
+        return;
+    }
+    strip.hidden = false;
+
+    let html = `<span class="tag-filter-chip ${state.activeTagFilter === null ? 'active' : ''}"
+                     onclick="filterByTag(null)">All</span>`;
+    for (const t of state.tags) {
+        const active = state.activeTagFilter === t.id ? 'active' : '';
+        html += `<span class="tag-filter-chip ${active}"
+                       style="--tag-color:${t.color}; ${state.activeTagFilter === t.id ? 'background:' + t.color + '; border-color:' + t.color + '; color:#fff' : ''}"
+                       onclick="filterByTag(${t.id})">${escHtml(t.name)}</span>`;
+    }
+    html += `<button class="tag-manage-btn" onclick="openTagManager()">Manage Tags</button>`;
+    strip.innerHTML = html;
+}
+
+function filterByTag(tagId) {
+    state.activeTagFilter = tagId;
+    renderTagFilter();
+    loadHistory();
+}
+
+// --- Tag Assignment Popover ---
+
+function openTagAssign(downloadId, anchorEl) {
+    closeTagAssign();
+
+    const pop = document.createElement('div');
+    pop.className = 'tag-assign-popover';
+    pop.id = 'tag-assign-popover';
+
+    // Get current tags from the history item's data attributes
+    const histEl = $(`hist-${downloadId}`);
+    const currentTagIds = new Set();
+    if (histEl) {
+        histEl.querySelectorAll('.tag-chip[data-tag-id]').forEach(chip => {
+            currentTagIds.add(parseInt(chip.dataset.tagId));
+        });
+    }
+
+    let html = '<div class="tag-assign-title">Assign Tags</div>';
+    if (state.tags.length === 0) {
+        html += '<p class="muted" style="padding:8px;font-size:12px">No tags yet. Create one in Manage Tags.</p>';
+    }
+    for (const t of state.tags) {
+        const checked = currentTagIds.has(t.id) ? 'checked' : '';
+        html += `<label class="tag-assign-row">
+            <input type="checkbox" ${checked}
+                   onchange="toggleTagAssign('${downloadId}', ${t.id}, this.checked)">
+            <span class="tag-chip" style="background:${t.color}20; color:${t.color}; border-color:${t.color}">${escHtml(t.name)}</span>
+        </label>`;
+    }
+    pop.innerHTML = html;
+
+    // Position relative to the h-tags container
+    const tagsContainer = anchorEl.closest('.h-tags');
+    if (tagsContainer) {
+        tagsContainer.style.position = 'relative';
+        tagsContainer.appendChild(pop);
+    } else {
+        anchorEl.parentElement.style.position = 'relative';
+        anchorEl.parentElement.appendChild(pop);
+    }
+
+    // Close on outside click (defer to avoid immediate close)
+    setTimeout(() => {
+        document.addEventListener('click', _closeTagAssignOnOutsideClick);
+    }, 0);
+}
+
+function closeTagAssign() {
+    const el = $('tag-assign-popover');
+    if (el) el.remove();
+    document.removeEventListener('click', _closeTagAssignOnOutsideClick);
+}
+
+function _closeTagAssignOnOutsideClick(e) {
+    const pop = $('tag-assign-popover');
+    if (pop && !pop.contains(e.target) && !e.target.classList.contains('add-tag-btn')) {
+        closeTagAssign();
+    }
+}
+
+async function toggleTagAssign(downloadId, tagId, add) {
+    const method = add ? 'POST' : 'DELETE';
+    try {
+        await fetch(`/api/downloads/${downloadId}/tags/${tagId}`, { method });
+        loadHistory();
+    } catch (e) {
+        console.error('Failed to toggle tag', e);
+    }
+    closeTagAssign();
+}
+
+// --- Tag Manager Modal ---
+
+function openTagManager() {
+    closeTagAssign();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'tag-manager-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) closeTagManager(); };
+
+    const colorOptions = TAG_COLORS.map((c, i) =>
+        `<span class="color-swatch${i === 0 ? ' selected' : ''}" data-color="${c}" style="background:${c}"
+              onclick="selectTagColor(this)"></span>`
+    ).join('');
+
+    const tagListHtml = state.tags.length > 0
+        ? state.tags.map(t =>
+            `<div class="tag-manager-row" data-tag-id="${t.id}">
+                <span class="tag-chip" style="background:${t.color}20; color:${t.color}; border-color:${t.color}">${escHtml(t.name)}</span>
+                <span style="flex:1"></span>
+                <button class="btn-sm" onclick="renameTag(${t.id}, '${escHtml(t.name)}')">Rename</button>
+                <button class="btn-sm btn-danger" onclick="removeTag(${t.id})">Delete</button>
+            </div>`
+        ).join('')
+        : '<p class="muted" style="font-size:12px">No tags created yet</p>';
+
+    overlay.innerHTML = `
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Manage Tags</h3>
+                <button class="modal-close" onclick="closeTagManager()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="tag-create-form">
+                    <input type="text" id="new-tag-name" placeholder="New tag name..." maxlength="30">
+                    <div class="color-palette" id="color-palette">${colorOptions}</div>
+                    <input type="hidden" id="new-tag-color" value="${TAG_COLORS[0]}">
+                    <button class="btn-primary btn-sm" onclick="createNewTag()">Create</button>
+                </div>
+                <div class="tag-manager-list" id="tag-manager-list">
+                    ${tagListHtml}
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    // Allow Enter key to create tag
+    const input = $('new-tag-name');
+    if (input) {
+        input.focus();
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') createNewTag();
+        });
+    }
+}
+
+function closeTagManager() {
+    const el = $('tag-manager-overlay');
+    if (el) el.remove();
+}
+
+function selectTagColor(el) {
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('selected'));
+    el.classList.add('selected');
+    $('new-tag-color').value = el.dataset.color;
+}
+
+async function createNewTag() {
+    const nameEl = $('new-tag-name');
+    const name = nameEl.value.trim();
+    const color = $('new-tag-color').value;
+    if (!name) return;
+
+    try {
+        const resp = await fetch('/api/tags', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, color }),
+        });
+        if (!resp.ok) {
+            const err = await resp.json();
+            alert(err.detail || 'Failed to create tag');
+            return;
+        }
+        await loadTags();
+        closeTagManager();
+        openTagManager();
+    } catch (e) {
+        console.error('Failed to create tag', e);
+    }
+}
+
+async function renameTag(tagId, currentName) {
+    const newName = prompt('Rename tag:', currentName);
+    if (!newName || newName.trim() === currentName) return;
+
+    try {
+        await fetch(`/api/tags/${tagId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName.trim() }),
+        });
+        await loadTags();
+        closeTagManager();
+        openTagManager();
+        loadHistory();
+    } catch (e) {
+        console.error('Failed to rename tag', e);
+    }
+}
+
+async function removeTag(tagId) {
+    if (!confirm('Delete this tag? It will be removed from all downloads.')) return;
+
+    try {
+        await fetch(`/api/tags/${tagId}`, { method: 'DELETE' });
+        await loadTags();
+        if (state.activeTagFilter === tagId) {
+            state.activeTagFilter = null;
+        }
+        closeTagManager();
+        openTagManager();
+        loadHistory();
+    } catch (e) {
+        console.error('Failed to delete tag', e);
+    }
+}
+
 // --- History ---
 
 async function loadHistory() {
     state.historyOffset = 0;
+    let url = `/api/downloads?limit=${state.historyLimit}&offset=0`;
+    if (state.activeTagFilter !== null) {
+        url += `&tag_id=${state.activeTagFilter}`;
+    }
     try {
-        const resp = await fetch(`/api/downloads?limit=${state.historyLimit}&offset=0`);
+        const resp = await fetch(url);
         if (!resp.ok) return;
         const data = await resp.json();
         renderHistory(data, false);
@@ -402,9 +675,12 @@ async function loadHistory() {
 
 async function loadMoreHistory() {
     state.historyOffset += state.historyLimit;
+    let url = `/api/downloads?limit=${state.historyLimit}&offset=${state.historyOffset}`;
+    if (state.activeTagFilter !== null) {
+        url += `&tag_id=${state.activeTagFilter}`;
+    }
     try {
-        const resp = await fetch(
-            `/api/downloads?limit=${state.historyLimit}&offset=${state.historyOffset}`);
+        const resp = await fetch(url);
         if (!resp.ok) return;
         const data = await resp.json();
         renderHistory(data, true);
@@ -431,7 +707,8 @@ function renderHistory(items, append) {
         if ($(`job-${item.id}`)) continue;
 
         const el = document.createElement('div');
-        el.className = 'history-item';
+        const pinnedClass = item.pinned ? ' history-item-pinned' : '';
+        el.className = 'history-item' + pinnedClass;
         el.id = `hist-${item.id}`;
 
         const thumbHtml = item.thumbnail
@@ -446,13 +723,29 @@ function renderHistory(items, append) {
             : item.status === 'error' ? 'color: var(--error)'
             : '';
 
+        const pinClass = item.pinned ? 'pin-btn pinned' : 'pin-btn';
+        const pinTitle = item.pinned ? 'Unpin' : 'Pin';
+
+        // Build tag chips
+        const tagsHtml = (item.tags || []).map(t =>
+            `<span class="tag-chip" data-tag-id="${t.id}"
+                   style="background:${t.color}20; color:${t.color}; border-color:${t.color}"
+                   onclick="filterByTag(${t.id})" title="Filter by ${escHtml(t.name)}">${escHtml(t.name)}</span>`
+        ).join('');
+
+        const addTagBtn = `<button class="add-tag-btn" onclick="openTagAssign('${item.id}', this)" title="Add tag">+</button>`;
+
         el.innerHTML = `
             ${thumbHtml}
-            <span class="h-title" title="${item.title || item.url}">${item.title || item.url}</span>
+            <div class="h-info">
+                <span class="h-title" title="${escHtml(item.title || item.url)}">${escHtml(item.title || item.url)}</span>
+                <span class="h-tags">${tagsHtml}${addTagBtn}</span>
+            </div>
             <span class="h-format">${formatPresetLabel(item.format_preset)}</span>
             <span class="h-size">${item.file_size ? formatBytes(item.file_size) : ''}</span>
             <span style="${statusClass}; font-size:12px; width:60px; text-align:center">${item.status}</span>
             <span class="h-actions">
+                <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${pinTitle}">&#9733;</button>
                 ${downloadBtn}
                 <button class="delete-btn" onclick="deleteJob('${item.id}')">Delete</button>
             </span>
@@ -466,7 +759,6 @@ async function deleteJob(jobId) {
         await fetch(`/api/downloads/${jobId}?delete_file=true`, { method: 'DELETE' });
         const el = $(`hist-${jobId}`);
         if (el) el.remove();
-        // Check if history is now empty
         if ($('history-list').children.length === 0) {
             $('no-history').hidden = false;
         }
@@ -491,10 +783,10 @@ async function loadVersion() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadVersion();
+    loadTags();
     loadHistory();
     loadExtractors();
 
-    // URL input: Enter key triggers fetch, typing checks support
     const urlInput = $('url-input');
     urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') fetchInfo();
