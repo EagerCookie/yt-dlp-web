@@ -40,6 +40,10 @@ const state = {
         items: [],
         currentIndex: -1,
         playing: false,
+        shuffle: false,
+        shuffleOrder: [],
+        shuffleIndex: -1,
+        repeat: 'none', // 'none' | 'all' | 'one'
     },
 };
 
@@ -1244,6 +1248,10 @@ function renderPlaylists() {
 
         const typeBadge = `<span class="playlist-type-badge ${pl.type === 'smart' ? 'smart' : ''}">${pl.type === 'smart' ? 'Smart' : 'Manual'}</span>`;
         const count = pl.item_count || 0;
+        const unpinned = pl.unpinned_count || 0;
+        const integrityHtml = unpinned > 0
+            ? `<span class="playlist-integrity-warning" title="${unpinned} file${unpinned !== 1 ? 's' : ''} not pinned — may be removed by auto-cleanup">${unpinned} unpinned</span>`
+            : '';
 
         el.innerHTML = `
             <div class="playlist-card-header">
@@ -1252,6 +1260,7 @@ function renderPlaylists() {
             </div>
             <div class="playlist-card-meta">
                 <span>${count} track${count !== 1 ? 's' : ''}</span>
+                ${integrityHtml}
             </div>
             <div class="playlist-card-actions">
                 <button onclick="playPlaylist(${pl.id})">&#9654; Play</button>
@@ -1296,8 +1305,27 @@ async function openPlaylistDetail(playlistId) {
         }
 
         renderPlaylistTracks();
+        updatePinAllButton();
     } catch (e) {
         console.error('Failed to open playlist', e);
+    }
+}
+
+function updatePinAllButton() {
+    const items = state.playlists.activeItems;
+    const hasUnpinned = items.some(i => !i.pinned);
+    $('pin-all-btn').hidden = !hasUnpinned;
+}
+
+async function pinAllPlaylistFiles() {
+    const plId = state.playlists.activeId;
+    if (!plId) return;
+    try {
+        await fetch(`/api/playlists/${plId}/pin-all`, { method: 'POST' });
+        // Reload detail
+        await openPlaylistDetail(plId);
+    } catch (e) {
+        console.error('Failed to pin all', e);
     }
 }
 
@@ -1410,6 +1438,7 @@ function renderPlaylistTracks() {
         const isPlaying = state.player.playlistId === state.playlists.activeId &&
                           state.player.currentIndex === i;
         if (isPlaying) el.classList.add('playing');
+        if (!item.pinned) el.classList.add('unpinned');
 
         const dragHandle = isManual
             ? `<span class="drag-handle" draggable="true">&#9776;</span>`
@@ -1812,23 +1841,96 @@ function playerToggle() {
 }
 
 function playerNext() {
-    const next = state.player.currentIndex + 1;
-    if (next < state.player.items.length) {
-        playTrack(next);
+    const p = state.player;
+    const len = p.items.length;
+    if (len === 0) return;
+
+    if (p.shuffle) {
+        const nextShuffleIdx = p.shuffleIndex + 1;
+        if (nextShuffleIdx < p.shuffleOrder.length) {
+            p.shuffleIndex = nextShuffleIdx;
+            playTrack(p.shuffleOrder[nextShuffleIdx]);
+        } else if (p.repeat === 'all') {
+            generateShuffleOrder();
+            p.shuffleIndex = 0;
+            playTrack(p.shuffleOrder[0]);
+        }
+        // repeat=none + end of shuffle: stop
+        return;
     }
+
+    const next = p.currentIndex + 1;
+    if (next < len) {
+        playTrack(next);
+    } else if (p.repeat === 'all') {
+        playTrack(0);
+    }
+    // repeat=none + end: stop
 }
 
 function playerPrev() {
     const audio = getAudioEl();
+    const p = state.player;
     // If > 3 seconds into track, restart; otherwise go to previous
     if (audio.currentTime > 3) {
         audio.currentTime = 0;
         return;
     }
-    const prev = state.player.currentIndex - 1;
+
+    if (p.shuffle) {
+        const prevShuffleIdx = p.shuffleIndex - 1;
+        if (prevShuffleIdx >= 0) {
+            p.shuffleIndex = prevShuffleIdx;
+            playTrack(p.shuffleOrder[prevShuffleIdx]);
+        }
+        return;
+    }
+
+    const prev = p.currentIndex - 1;
     if (prev >= 0) {
         playTrack(prev);
     }
+}
+
+function generateShuffleOrder() {
+    const p = state.player;
+    const len = p.items.length;
+    const order = Array.from({ length: len }, (_, i) => i);
+    // Fisher-Yates shuffle
+    for (let i = len - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+    }
+    // Move current track to front so it doesn't replay immediately
+    if (p.currentIndex >= 0) {
+        const idx = order.indexOf(p.currentIndex);
+        if (idx > 0) {
+            [order[0], order[idx]] = [order[idx], order[0]];
+        }
+    }
+    p.shuffleOrder = order;
+    p.shuffleIndex = 0;
+}
+
+function toggleShuffle() {
+    const p = state.player;
+    p.shuffle = !p.shuffle;
+    if (p.shuffle && p.items.length > 0) {
+        generateShuffleOrder();
+    }
+    $('shuffle-btn').classList.toggle('active', p.shuffle);
+}
+
+function toggleRepeat() {
+    const p = state.player;
+    const modes = ['none', 'all', 'one'];
+    const idx = modes.indexOf(p.repeat);
+    p.repeat = modes[(idx + 1) % modes.length];
+
+    const btn = $('repeat-btn');
+    const badge = $('repeat-one-badge');
+    btn.classList.toggle('active', p.repeat !== 'none');
+    badge.hidden = p.repeat !== 'one';
 }
 
 function playerSeek(value) {
@@ -1861,6 +1963,11 @@ function initPlayerEvents() {
     });
 
     audio.addEventListener('ended', () => {
+        if (state.player.repeat === 'one') {
+            audio.currentTime = 0;
+            audio.play().catch(() => {});
+            return;
+        }
         state.player.playing = false;
         playerNext();
     });

@@ -194,6 +194,7 @@
                             </div>
                             <div class="playlist-detail-actions">
                                 <button class="btn-sm" onclick="playCurrentPlaylist()" title="Play">&#9654; Play</button>
+                                <button class="btn-sm" id="pin-all-btn" onclick="pinAllPlaylistFiles()" title="Pin all files to prevent auto-cleanup" hidden>&#128204; Pin All</button>
                                 <button class="btn-sm" onclick="downloadCurrentM3U()" title="Download M3U">M3U</button>
                                 <button class="btn-sm" onclick="copyCurrentPlaylistUrl()" title="Copy M3U URL">Copy URL</button>
                             </div>
@@ -228,6 +229,9 @@
     <!-- Player bar (global, fixed bottom) -->
     <div id="player-bar" class="player-bar" hidden>
         <div class="player-controls">
+            <button class="player-btn" id="shuffle-btn" onclick="toggleShuffle()" title="Shuffle">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 3h5v5"/><path d="M4 20L21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+            </button>
             <button class="player-btn" onclick="playerPrev()" title="Previous">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
             </button>
@@ -236,6 +240,10 @@
             </button>
             <button class="player-btn" onclick="playerNext()" title="Next">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M16 18h2V6h-2zM6 18l8.5-6L6 6z"/></svg>
+            </button>
+            <button class="player-btn" id="repeat-btn" onclick="toggleRepeat()" title="Repeat">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 014-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 01-4 4H3"/></svg>
+                <span class="repeat-one-badge" id="repeat-one-badge" hidden>1</span>
             </button>
         </div>
         <div class="player-info">

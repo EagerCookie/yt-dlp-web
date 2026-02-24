@@ -1424,6 +1424,31 @@ header h1 {
     background: rgba(239, 68, 68, 0.1);
 }
 
+/* Playlist Integrity */
+
+.playlist-track.unpinned {
+    opacity: 0.65;
+}
+
+.playlist-track.unpinned .track-title::after {
+    content: '\26A0';
+    margin-left: 6px;
+    color: #f59e0b;
+    font-size: 12px;
+}
+
+.playlist-integrity-warning {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: #f59e0b;
+    font-size: 12px;
+}
+
+.playlist-integrity-warning::before {
+    content: '\26A0';
+}
+
 /* ===== Player Bar ===== */
 
 .player-bar {
@@ -1464,6 +1489,28 @@ header h1 {
 .player-btn:hover {
     color: var(--text);
     background: var(--surface2);
+}
+
+.player-btn.active {
+    color: var(--accent);
+}
+
+.player-btn.active:hover {
+    color: var(--accent);
+}
+
+.player-btn {
+    position: relative;
+}
+
+.repeat-one-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    font-size: 8px;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
 }
 
 .player-btn-main {

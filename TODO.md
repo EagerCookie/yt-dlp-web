@@ -42,10 +42,10 @@
 - [x] Dedicated Playlists page with sidebar navigation
 - [x] Built-in HTML5 audio/video player with prev/next/seek/volume
 - [x] M3U export (download file or copy URL for external players)
-- [ ] Playlist integrity indicator — visually mark playlists that contain non-pinned files
+- [x] Playlist integrity indicator — visually mark playlists that contain non-pinned files
   (files subject to auto-cleanup). Warn user that playlist may become incomplete
-- [ ] Option to auto-pin all files in a playlist
-- [ ] Shuffle / repeat modes
+- [x] Option to auto-pin all files in a playlist
+- [x] Shuffle / repeat modes
 
 ## Radio Mode
 - [ ] Broadcast playlists as internet radio stream

@@ -368,28 +368,35 @@ async def create_playlist(db: aiosqlite.Connection, name: str,
 
 
 async def list_playlists(db: aiosqlite.Connection) -> list[dict]:
-    """List all playlists with item counts."""
+    """List all playlists with item counts and unpinned counts."""
     async with db.execute(
-        'SELECT p.*, COUNT(pi.download_id) as item_count '
-        'FROM playlists p LEFT JOIN playlist_items pi ON p.id = pi.playlist_id '
+        'SELECT p.*, COUNT(pi.download_id) as item_count, '
+        'SUM(CASE WHEN d.pinned = 0 THEN 1 ELSE 0 END) as unpinned_count '
+        'FROM playlists p '
+        'LEFT JOIN playlist_items pi ON p.id = pi.playlist_id '
+        'LEFT JOIN downloads d ON pi.download_id = d.id '
         'GROUP BY p.id ORDER BY p.updated_at DESC'
     ) as cur:
         rows = [dict(r) for r in await cur.fetchall()]
 
-    # For smart playlists, compute actual item count from matching downloads
+    # For smart playlists, compute actual item count and unpinned count
     for row in rows:
         if row['type'] == 'smart' and row.get('smart_tag_ids'):
             tag_ids = [int(x) for x in row['smart_tag_ids'].split(',') if x.strip()]
             if tag_ids:
                 placeholders = ','.join('?' * len(tag_ids))
                 async with db.execute(
-                    f'SELECT COUNT(DISTINCT d.id) as cnt FROM downloads d '
+                    f'SELECT COUNT(DISTINCT d.id) as cnt, '
+                    f'COUNT(DISTINCT CASE WHEN d.pinned = 0 THEN d.id END) as unpinned '
+                    f'FROM downloads d '
                     f'JOIN download_tags dt ON d.id = dt.download_id '
                     f'WHERE dt.tag_id IN ({placeholders}) AND d.status = ?',
                     [*tag_ids, 'done'],
                 ) as cur:
                     cnt_row = await cur.fetchone()
                     row['item_count'] = cnt_row['cnt'] if cnt_row else 0
+                    row['unpinned_count'] = cnt_row['unpinned'] if cnt_row else 0
+        row['unpinned_count'] = row.get('unpinned_count') or 0
     return rows
 
 

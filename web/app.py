@@ -688,6 +688,18 @@ async def reorder_playlist_endpoint(playlist_id: int, req: PlaylistReorder):
     return {'status': 'reordered'}
 
 
+@app.post('/api/playlists/{playlist_id}/pin-all')
+async def pin_all_playlist_files(playlist_id: int):
+    pl = await get_playlist(app.state.db, playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    items = await get_playlist_items(app.state.db, playlist_id)
+    ids = [item['id'] for item in items if not item.get('pinned')]
+    if ids:
+        await bulk_pin(app.state.db, ids, True)
+    return {'status': 'pinned', 'count': len(ids)}
+
+
 @app.get('/api/playlists/{playlist_id}/m3u')
 async def export_playlist_m3u(playlist_id: int, request: Request):
     pl = await get_playlist(app.state.db, playlist_id)
