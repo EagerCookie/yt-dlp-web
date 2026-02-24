@@ -121,6 +121,22 @@ function escHtml(str) {
 
 function $(id) { return document.getElementById(id); }
 
+function copyToClipboard(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text);
+    }
+    // Fallback for non-HTTPS
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); } catch (e) { /* ignore */ }
+    document.body.removeChild(ta);
+    return Promise.resolve();
+}
+
 function showError(msg) {
     const el = $('error-msg');
     el.textContent = msg;
@@ -1679,9 +1695,7 @@ function downloadCurrentM3U() {
 
 function copyPlaylistUrl(plId) {
     const url = `${location.origin}/api/playlists/${plId}/m3u`;
-    navigator.clipboard.writeText(url).then(() => {
-        // Brief visual feedback could go here
-    }).catch(e => console.error('Failed to copy', e));
+    copyToClipboard(url).catch(e => console.error('Failed to copy', e));
 }
 
 function copyCurrentPlaylistUrl() {
@@ -2115,13 +2129,12 @@ function connectRadioWS() {
 
 function copyRadioUrl() {
     const url = `${location.origin}/radio/stream`;
-    navigator.clipboard.writeText(url).then(() => {
-        // Quick visual feedback
+    copyToClipboard(url).then(() => {
         const btn = document.querySelector('.radio-actions button[title="Copy stream URL"]');
         if (btn) {
-            const orig = btn.textContent;
+            const orig = btn.innerHTML;
             btn.textContent = '\u2713';
-            setTimeout(() => btn.textContent = orig, 1500);
+            setTimeout(() => btn.innerHTML = orig, 1500);
         }
     }).catch(() => {});
 }

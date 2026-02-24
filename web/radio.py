@@ -132,6 +132,12 @@ class RadioEngine:
     async def _stream_loop(self):
         try:
             while self._running:
+                # Wait for at least one listener before starting FFmpeg
+                while self._running and not self._subscribers:
+                    await asyncio.sleep(0.5)
+                if not self._running:
+                    break
+
                 if self._order_pos >= len(self._order):
                     # Loop playlist
                     self._build_order()
@@ -161,12 +167,22 @@ class RadioEngine:
             return
 
         self._skip_event.clear()
+
+        # If already MP3 — copy stream without re-encoding (near-zero CPU)
+        is_mp3 = file_path.lower().endswith('.mp3')
+        if is_mp3:
+            codec_args = ['-c:a', 'copy']
+        else:
+            codec_args = ['-b:a', '128k', '-ac', '2', '-ar', '44100']
+
         try:
             self._process = await asyncio.create_subprocess_exec(
                 'ffmpeg', '-hide_banner', '-loglevel', 'error',
+                '-re',  # Read input at native frame rate (real-time pacing)
+                '-threads', '1',
                 '-i', file_path,
-                '-f', 'mp3', '-ab', '128k', '-ac', '2', '-ar', '44100',
-                '-vn', 'pipe:1',
+                '-vn', '-f', 'mp3', *codec_args,
+                'pipe:1',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -176,6 +192,9 @@ class RadioEngine:
 
         try:
             while self._running and not self._skip_event.is_set():
+                # If all listeners disconnected, kill this FFmpeg and wait
+                if not self._subscribers:
+                    break
                 try:
                     chunk = await asyncio.wait_for(
                         self._process.stdout.read(CHUNK_SIZE), timeout=5.0)
