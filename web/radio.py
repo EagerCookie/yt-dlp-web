@@ -168,22 +168,20 @@ class RadioEngine:
 
         self._skip_event.clear()
 
-        # If already MP3 — copy stream without re-encoding (near-zero CPU)
-        is_mp3 = file_path.lower().endswith('.mp3')
-        if is_mp3:
-            codec_args = ['-c:a', 'copy']
-        else:
-            codec_args = ['-b:a', '128k', '-ac', '2', '-ar', '44100']
-
+        # Always re-encode to ensure clean MP3 frames for streaming.
+        # MP3 128k encoding is ~1-2% CPU — negligible.
+        # -c:a copy is unreliable for streaming (leaks ID3/Xing headers).
         try:
             self._process = await asyncio.create_subprocess_exec(
                 'ffmpeg', '-hide_banner', '-loglevel', 'error',
-                '-re',  # Read input at native frame rate (real-time pacing)
+                '-re',
                 '-threads', '1',
                 '-i', file_path,
-                '-vn', '-f', 'mp3', *codec_args,
-                '-write_xing', '0',       # No Xing/LAME header (breaks streaming)
-                '-id3v2_version', '0',     # No ID3v2 tags (confuses VLC)
+                '-vn',
+                '-c:a', 'libmp3lame', '-b:a', '128k', '-ac', '2', '-ar', '44100',
+                '-write_xing', '0',
+                '-id3v2_version', '0',
+                '-f', 'mp3',
                 'pipe:1',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
