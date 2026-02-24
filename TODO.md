@@ -54,6 +54,10 @@
 - [x] Now playing info via API (`/api/radio/status`) and WebSocket (`/ws/radio`)
 - [x] Auto-advancement with repeat (loops playlist), skip track support
 
+## Improvements
+- [x] Library: add filter for unpinned files
+- [x] Auto-tagging: verified — Audio/Video system tags assigned automatically on download completion
+
 ## Synchronized Playback
 - [ ] Branch `sync-snapcast`: SnapCast integration
   - Multi-room synchronized audio playback

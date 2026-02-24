@@ -23,6 +23,7 @@ const state = {
         sortBy: 'created_at',
         sortOrder: 'desc',
         tagIds: new Set(),  // multi-select tag filter
+        unpinnedOnly: false,
         selected: new Set(),
     },
 
@@ -956,6 +957,7 @@ function buildLibraryUrl() {
     url += `&status=done`; // Library only shows completed downloads
 
     if (lib.tagIds.size > 0) url += `&tag_ids=${[...lib.tagIds].join(',')}`;
+    if (lib.unpinnedOnly) url += `&unpinned_only=true`;
     if (lib.search) url += `&search=${encodeURIComponent(lib.search)}`;
 
     return url;
@@ -1067,9 +1069,15 @@ function renderLibraryTagFilters() {
 
     const lib = state.library;
 
-    // "All" chip — active when no tags selected
-    let html = `<span class="tag-filter-chip ${lib.tagIds.size === 0 ? 'active' : ''}"
+    // "All" chip — active when no tags and no unpinned filter
+    const allActive = lib.tagIds.size === 0 && !lib.unpinnedOnly;
+    let html = `<span class="tag-filter-chip ${allActive ? 'active' : ''}"
                      onclick="clearLibraryTagFilter()">All</span>`;
+
+    // "Unpinned" chip
+    html += `<span class="tag-filter-chip ${lib.unpinnedOnly ? 'active' : ''}"
+                   style="${lib.unpinnedOnly ? 'background:#f59e0b;border-color:#f59e0b;color:#fff' : ''}"
+                   onclick="toggleLibraryUnpinnedFilter()">Unpinned</span>`;
 
     for (const t of state.tags) {
         const active = lib.tagIds.has(t.id);
@@ -1099,6 +1107,13 @@ function toggleLibraryTagFilter(tagId) {
 
 function clearLibraryTagFilter() {
     state.library.tagIds.clear();
+    state.library.unpinnedOnly = false;
+    renderLibraryTagFilters();
+    loadLibrary();
+}
+
+function toggleLibraryUnpinnedFilter() {
+    state.library.unpinnedOnly = !state.library.unpinnedOnly;
     renderLibraryTagFilters();
     loadLibrary();
 }

@@ -162,6 +162,7 @@ async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
                          sort_by: str = 'created_at',
                          sort_order: str = 'desc',
                          pinned_only: bool = False,
+                         unpinned_only: bool = False,
                          format_preset: str | None = None,
                          status: str | None = None) -> list[dict]:
     # Validate sort params
@@ -189,6 +190,9 @@ async def list_downloads(db: aiosqlite.Connection, limit: int = 50,
 
     if pinned_only:
         conditions.append('d.pinned = 1')
+
+    if unpinned_only:
+        conditions.append('d.pinned = 0')
 
     if format_preset:
         if format_preset == 'video':

@@ -433,6 +433,7 @@ async def get_downloads(limit: int = Query(50, ge=1, le=200),
                         sort_by: str = Query('created_at'),
                         sort_order: str = Query('desc'),
                         pinned_only: bool = Query(False),
+                        unpinned_only: bool = Query(False),
                         format_preset: str | None = Query(None),
                         status: str | None = Query(None)):
     # Parse comma-separated tag_ids
@@ -447,7 +448,8 @@ async def get_downloads(limit: int = Query(50, ge=1, le=200),
         app.state.db, limit, offset,
         tag_id=tag_id, tag_ids=parsed_tag_ids, search=search,
         sort_by=sort_by, sort_order=sort_order,
-        pinned_only=pinned_only, format_preset=format_preset,
+        pinned_only=pinned_only, unpinned_only=unpinned_only,
+        format_preset=format_preset,
         status=status,
     )
     return rows
