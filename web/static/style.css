@@ -1536,9 +1536,21 @@ body.radio-active:not(.player-active) .radio-bar {
 }
 
 .radio-meta {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     font-size: 11px;
     color: #94a3b8;
     flex-shrink: 0;
+}
+
+.radio-track-pos {
+    font-weight: 600;
+    color: #cbd5e1;
+}
+
+.radio-duration {
+    color: #64748b;
 }
 
 .radio-actions {

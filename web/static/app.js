@@ -2039,6 +2039,10 @@ async function stopRadio() {
             state.radio.ws.close();
             state.radio.ws = null;
         }
+        // Re-render playlist cards to reset "Stop Radio" → "Radio"
+        if (state.currentView === 'playlists' && !state.playlists.activeId) {
+            renderPlaylists();
+        }
     } catch (e) {
         console.error('Failed to stop radio', e);
     }
@@ -2064,6 +2068,19 @@ async function pollRadioStatus() {
     }
 }
 
+// Poll radio status every 5s to keep listener count and track info fresh
+let _radioPollingInterval = null;
+function startRadioPolling() {
+    if (_radioPollingInterval) return;
+    _radioPollingInterval = setInterval(pollRadioStatus, 5000);
+}
+function stopRadioPolling() {
+    if (_radioPollingInterval) {
+        clearInterval(_radioPollingInterval);
+        _radioPollingInterval = null;
+    }
+}
+
 function updateRadioState(data) {
     state.radio.active = data.active;
     state.radio.playlistId = data.playlist_id;
@@ -2071,6 +2088,12 @@ function updateRadioState(data) {
     state.radio.nowPlaying = data.now_playing;
     state.radio.listeners = data.listeners || 0;
     updateRadioUI();
+    // Start/stop polling based on radio state
+    if (data.active) {
+        startRadioPolling();
+    } else {
+        stopRadioPolling();
+    }
     // Re-render playlist cards to update Radio button state
     if (state.currentView === 'playlists' && !state.playlists.activeId) {
         renderPlaylists();
@@ -2083,10 +2106,16 @@ function updateRadioUI() {
         bar.hidden = false;
         document.body.classList.add('radio-active');
         $('radio-playlist-name').textContent = state.radio.playlistName;
-        if (state.radio.nowPlaying) {
-            $('radio-now-playing').textContent = state.radio.nowPlaying.title || '---';
+        const np = state.radio.nowPlaying;
+        if (np) {
+            $('radio-now-playing').textContent = np.title || '---';
+            $('radio-track-pos').textContent = `Track ${(np.index || 0) + 1}/${np.total || '?'}`;
+            const dur = np.duration;
+            $('radio-duration').textContent = dur ? formatDuration(dur) : '';
         } else {
-            $('radio-now-playing').textContent = '---';
+            $('radio-now-playing').textContent = 'Waiting for listeners...';
+            $('radio-track-pos').textContent = '';
+            $('radio-duration').textContent = '';
         }
         $('radio-listeners').textContent = `${state.radio.listeners} listener${state.radio.listeners !== 1 ? 's' : ''}`;
     } else {
