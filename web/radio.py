@@ -182,6 +182,8 @@ class RadioEngine:
                 '-threads', '1',
                 '-i', file_path,
                 '-vn', '-f', 'mp3', *codec_args,
+                '-write_xing', '0',       # No Xing/LAME header (breaks streaming)
+                '-id3v2_version', '0',     # No ID3v2 tags (confuses VLC)
                 'pipe:1',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
