@@ -48,11 +48,11 @@
 - [x] Shuffle / repeat modes
 
 ## Radio Mode
-- [ ] Broadcast playlists as internet radio stream
-- [ ] Stream endpoint (e.g. `/radio/{playlist_id}`)
-- [ ] Icecast/Shoutcast compatible output
-- [ ] Now playing info via API/WebSocket
-- [ ] Auto-advancement and shuffle/repeat modes
+- [x] Broadcast playlists as internet radio stream
+- [x] Stream endpoint (`GET /radio/stream` — continuous MP3 via FFmpeg)
+- [x] Icecast-compatible HTTP streaming with icy-name header
+- [x] Now playing info via API (`/api/radio/status`) and WebSocket (`/ws/radio`)
+- [x] Auto-advancement with repeat (loops playlist), skip track support
 
 ## Synchronized Playback
 - [ ] Branch `sync-snapcast`: SnapCast integration

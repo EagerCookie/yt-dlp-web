@@ -34,6 +34,16 @@ const state = {
         activeItems: [],
     },
 
+    // Radio state
+    radio: {
+        active: false,
+        playlistId: null,
+        playlistName: '',
+        nowPlaying: null,
+        listeners: 0,
+        ws: null,
+    },
+
     // Player state
     player: {
         playlistId: null,
@@ -1264,6 +1274,9 @@ function renderPlaylists() {
             </div>
             <div class="playlist-card-actions">
                 <button onclick="playPlaylist(${pl.id})">&#9654; Play</button>
+                ${state.radio.active && state.radio.playlistId === pl.id
+                    ? `<button onclick="event.stopPropagation(); stopRadio()" style="border-color:var(--error);color:var(--error)">Stop Radio</button>`
+                    : `<button onclick="event.stopPropagation(); startRadio(${pl.id})">Radio</button>`}
                 <button onclick="window.open('/api/playlists/${pl.id}/m3u')">M3U</button>
                 <button onclick="copyPlaylistUrl(${pl.id})">Copy URL</button>
                 <button onclick="event.stopPropagation(); deletePlaylist(${pl.id})" style="border-color:var(--error);color:var(--error)">Delete</button>
@@ -1983,6 +1996,136 @@ function initPlayerEvents() {
     });
 }
 
+// ===== Radio =====
+
+async function startRadio(playlistId) {
+    try {
+        const resp = await fetch('/api/radio/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ playlist_id: playlistId }),
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        updateRadioState(data);
+        connectRadioWS();
+    } catch (e) {
+        console.error('Failed to start radio', e);
+    }
+}
+
+async function stopRadio() {
+    try {
+        await fetch('/api/radio/stop', { method: 'POST' });
+        state.radio.active = false;
+        state.radio.playlistId = null;
+        state.radio.nowPlaying = null;
+        updateRadioUI();
+        if (state.radio.ws) {
+            state.radio.ws.close();
+            state.radio.ws = null;
+        }
+    } catch (e) {
+        console.error('Failed to stop radio', e);
+    }
+}
+
+async function skipRadioTrack() {
+    try {
+        await fetch('/api/radio/skip', { method: 'POST' });
+    } catch (e) {
+        console.error('Failed to skip radio track', e);
+    }
+}
+
+async function pollRadioStatus() {
+    try {
+        const resp = await fetch('/api/radio/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        updateRadioState(data);
+        if (data.active) connectRadioWS();
+    } catch (e) {
+        console.error('Failed to poll radio status', e);
+    }
+}
+
+function updateRadioState(data) {
+    state.radio.active = data.active;
+    state.radio.playlistId = data.playlist_id;
+    state.radio.playlistName = data.playlist_name || '';
+    state.radio.nowPlaying = data.now_playing;
+    state.radio.listeners = data.listeners || 0;
+    updateRadioUI();
+    // Re-render playlist cards to update Radio button state
+    if (state.currentView === 'playlists' && !state.playlists.activeId) {
+        renderPlaylists();
+    }
+}
+
+function updateRadioUI() {
+    const bar = $('radio-bar');
+    if (state.radio.active) {
+        bar.hidden = false;
+        document.body.classList.add('radio-active');
+        $('radio-playlist-name').textContent = state.radio.playlistName;
+        if (state.radio.nowPlaying) {
+            $('radio-now-playing').textContent = state.radio.nowPlaying.title || '---';
+        } else {
+            $('radio-now-playing').textContent = '---';
+        }
+        $('radio-listeners').textContent = `${state.radio.listeners} listener${state.radio.listeners !== 1 ? 's' : ''}`;
+    } else {
+        bar.hidden = true;
+        document.body.classList.remove('radio-active');
+    }
+}
+
+function connectRadioWS() {
+    if (state.radio.ws) return;
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${location.host}/ws/radio`);
+    state.radio.ws = ws;
+
+    ws.onmessage = (e) => {
+        try {
+            const data = JSON.parse(e.data);
+            if (data.stopped) {
+                state.radio.active = false;
+                state.radio.nowPlaying = null;
+                updateRadioUI();
+                ws.close();
+                state.radio.ws = null;
+                return;
+            }
+            state.radio.nowPlaying = data;
+            updateRadioUI();
+        } catch (err) {
+            console.error('Radio WS parse error', err);
+        }
+    };
+
+    ws.onclose = () => {
+        state.radio.ws = null;
+    };
+    ws.onerror = () => {
+        state.radio.ws = null;
+    };
+}
+
+function copyRadioUrl() {
+    const url = `${location.origin}/radio/stream`;
+    navigator.clipboard.writeText(url).then(() => {
+        // Quick visual feedback
+        const btn = document.querySelector('.radio-actions button[title="Copy stream URL"]');
+        if (btn) {
+            const orig = btn.textContent;
+            btn.textContent = '\u2713';
+            setTimeout(() => btn.textContent = orig, 1500);
+        }
+    }).catch(() => {});
+}
+
 // ===== Init =====
 
 async function loadVersion() {
@@ -2004,6 +2147,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadExtractors();
     initRouter();
     initPlayerEvents();
+    pollRadioStatus();
 
     const urlInput = $('url-input');
     urlInput.addEventListener('keydown', (e) => {

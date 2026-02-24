@@ -1451,6 +1451,128 @@ header h1 {
 
 /* ===== Player Bar ===== */
 
+/* ===== Radio Bar ===== */
+
+.radio-bar {
+    position: fixed;
+    bottom: 64px;
+    left: 0;
+    right: 0;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    border-top: 1px solid rgba(239, 68, 68, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 8px 20px;
+    z-index: 151;
+    height: 48px;
+    color: #e2e8f0;
+}
+
+.radio-bar[hidden] {
+    display: none !important;
+}
+
+body.radio-active .main-content {
+    padding-bottom: 120px;
+}
+
+body.radio-active.player-active .radio-bar {
+    bottom: 64px;
+}
+
+body.radio-active:not(.player-active) .radio-bar {
+    bottom: 0;
+}
+
+.radio-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #ef4444;
+    flex-shrink: 0;
+}
+
+.radio-live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #ef4444;
+    animation: radio-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes radio-pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.radio-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.radio-playlist-name {
+    font-size: 11px;
+    color: #94a3b8;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.radio-now-playing {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.radio-meta {
+    font-size: 11px;
+    color: #94a3b8;
+    flex-shrink: 0;
+}
+
+.radio-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.radio-btn {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 6px;
+    border-radius: 50%;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.15s, background 0.15s;
+}
+
+.radio-btn:hover {
+    color: #e2e8f0;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.radio-btn-stop:hover {
+    color: #ef4444;
+}
+
+/* ===== Player Bar ===== */
+
 .player-bar {
     position: fixed;
     bottom: 0;

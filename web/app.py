@@ -7,7 +7,7 @@ import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -55,6 +55,8 @@ logger = logging.getLogger('yt-dlp-web')
 
 CLEANUP_HOURS = int(os.environ.get('CLEANUP_AFTER_HOURS', '0'))
 
+from web.radio import RadioEngine  # noqa: E402
+
 
 def _remove_thumbnail(row: dict) -> None:
     """Remove local thumbnail file for a download row."""
@@ -74,6 +76,7 @@ class ConnectionManager:
     def __init__(self):
         self._sockets: dict[str, list[WebSocket]] = {}
         self._global: list[WebSocket] = []
+        self._radio: list[WebSocket] = []
 
     async def connect(self, job_id: str, ws: WebSocket) -> None:
         await ws.accept()
@@ -111,6 +114,23 @@ class ConnectionManager:
                 dead_global.append(ws)
         for ws in dead_global:
             self.disconnect_global(ws)
+
+    async def connect_radio(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._radio.append(ws)
+
+    def disconnect_radio(self, ws: WebSocket) -> None:
+        self._radio = [s for s in self._radio if s is not ws]
+
+    async def broadcast_radio(self, data: dict) -> None:
+        dead: list[WebSocket] = []
+        for ws in self._radio:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_radio(ws)
 
 
 # --- Periodic cleanup ---
@@ -221,6 +241,7 @@ async def lifespan(app: FastAPI):
     await init_db(db)
     app.state.db = db
     app.state.ws_manager = ConnectionManager()
+    app.state.radio = RadioEngine()
     app.state.active_tasks: dict[str, asyncio.Task] = {}
     app.state.cancel_events: dict[str, threading.Event] = {}
 
@@ -233,6 +254,7 @@ async def lifespan(app: FastAPI):
 
     if cleanup_task:
         cleanup_task.cancel()
+    await app.state.radio.stop()
     executor.shutdown(wait=False)
     await db.close()
 
@@ -722,6 +744,74 @@ async def export_playlist_m3u(playlist_id: int, request: Request):
     )
 
 
+# --- Radio endpoints ---
+
+
+class RadioStart(BaseModel):
+    playlist_id: int
+    shuffle: bool = False
+
+
+@app.post('/api/radio/start')
+async def radio_start(req: RadioStart):
+    pl = await get_playlist(app.state.db, req.playlist_id)
+    if not pl:
+        raise HTTPException(status_code=404, detail='Playlist not found')
+    items = await get_playlist_items(app.state.db, req.playlist_id)
+    if not items:
+        raise HTTPException(status_code=400, detail='Playlist is empty')
+
+    radio = app.state.radio
+    manager = app.state.ws_manager
+
+    async def on_track_change(np: dict):
+        await manager.broadcast_radio(np)
+
+    await radio.start(
+        playlist_id=req.playlist_id,
+        playlist_name=pl['name'],
+        items=items,
+        shuffle=req.shuffle,
+        on_track_change=on_track_change,
+    )
+    return radio.status()
+
+
+@app.post('/api/radio/stop')
+async def radio_stop():
+    await app.state.radio.stop()
+    await app.state.ws_manager.broadcast_radio({'stopped': True})
+    return {'status': 'stopped'}
+
+
+@app.post('/api/radio/skip')
+async def radio_skip():
+    await app.state.radio.skip()
+    return {'status': 'skipped'}
+
+
+@app.get('/api/radio/status')
+async def radio_status():
+    return app.state.radio.status()
+
+
+@app.get('/radio/stream')
+async def radio_stream():
+    radio = app.state.radio
+    if not radio.active:
+        raise HTTPException(status_code=404, detail='Radio is not active')
+    q = radio.subscribe()
+    return StreamingResponse(
+        radio.iter_chunks(q),
+        media_type='audio/mpeg',
+        headers={
+            'Cache-Control': 'no-cache, no-store',
+            'Connection': 'keep-alive',
+            'icy-name': radio.playlist_name,
+        },
+    )
+
+
 # --- WebSocket endpoints ---
 
 @app.websocket('/ws/{job_id}')
@@ -758,3 +848,19 @@ async def ws_global(ws: WebSocket):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect_global(ws)
+
+
+@app.websocket('/ws/radio')
+async def ws_radio(ws: WebSocket):
+    """WebSocket for radio now-playing updates."""
+    manager = app.state.ws_manager
+    await manager.connect_radio(ws)
+    # Send current status immediately
+    radio = app.state.radio
+    if radio.active:
+        await ws.send_json(radio.now_playing())
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_radio(ws)

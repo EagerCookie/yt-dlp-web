@@ -226,6 +226,26 @@
         </div>
     </div>
 
+    <!-- Radio bar (fixed, above player bar) -->
+    <div id="radio-bar" class="radio-bar" hidden>
+        <div class="radio-indicator">
+            <span class="radio-live-dot"></span>
+            <span>LIVE</span>
+        </div>
+        <div class="radio-info">
+            <span class="radio-playlist-name" id="radio-playlist-name"></span>
+            <span class="radio-now-playing" id="radio-now-playing">---</span>
+        </div>
+        <div class="radio-meta">
+            <span id="radio-listeners">0 listeners</span>
+        </div>
+        <div class="radio-actions">
+            <button class="radio-btn" onclick="skipRadioTrack()" title="Skip track">&#9197;</button>
+            <button class="radio-btn" onclick="copyRadioUrl()" title="Copy stream URL">&#128279;</button>
+            <button class="radio-btn radio-btn-stop" onclick="stopRadio()" title="Stop radio">&#9209;</button>
+        </div>
+    </div>
+
     <!-- Player bar (global, fixed bottom) -->
     <div id="player-bar" class="player-bar" hidden>
         <div class="player-controls">
