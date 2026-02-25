@@ -143,27 +143,28 @@ class RadioEngine:
     async def _stop_internal(self):
         self._running = False
         self._skip_event.set()
-        # Kill snapcast FFmpeg FIRST to stop writing to FIFO immediately
-        await self._stop_snap_process()
-        # Flush FIFO with silence so snapserver doesn't play leftover noise
-        if self._snapcast and self._snapcast.enabled:
-            self._snapcast.flush_silence()
-        # Kill main MP3 FFmpeg
-        if self._process and self._process.returncode is None:
-            try:
-                self._process.kill()
-                await self._process.wait()
-            except Exception:
-                pass
-            self._process = None
+        # 1. Cancel the stream task — this triggers _feed_track's finally
+        #    which is the PRIMARY cleanup path for both FFmpeg processes.
         if self._task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except (asyncio.CancelledError, Exception):
                 pass
-            self._task = None
-        # Send empty sentinel to all subscribers so they disconnect
+        self._task = None
+        # 2. Safety net: kill any leftover processes that finally might have missed
+        await self._stop_snap_process()
+        if self._process and self._process.returncode is None:
+            try:
+                self._process.kill()
+                await self._process.wait()
+            except Exception:
+                pass
+        self._process = None
+        # 3. Flush FIFO with silence so snapserver doesn't play leftover noise
+        if self._snapcast and self._snapcast.enabled:
+            self._snapcast.flush_silence()
+        # 4. Send empty sentinel to all subscribers so they disconnect
         for q in self._subscribers:
             try:
                 q.put_nowait(b'')
@@ -276,8 +277,10 @@ class RadioEngine:
                 except Exception:
                     pass
             self._process = None
-            # Clean up snapcast FFmpeg
+            # Clean up snapcast FFmpeg and flush FIFO
             await self._stop_snap_process()
+            if self._snapcast and self._snapcast.enabled:
+                self._snapcast.flush_silence()
 
     async def _stop_snap_process(self):
         """Kill the snapcast FFmpeg process and task if running."""
