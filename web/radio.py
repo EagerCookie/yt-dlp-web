@@ -54,6 +54,24 @@ class RadioEngine:
     async def skip(self):
         self._skip_event.set()
 
+    async def jump_to(self, index: int):
+        """Jump to a specific track index."""
+        if index < 0 or index >= len(self.items):
+            return
+        # Insert the target index at the front of the remaining order
+        self._order.insert(self._order_pos, index)
+        self._skip_event.set()
+
+    async def toggle_shuffle(self, shuffle: bool):
+        self.shuffle = shuffle
+        if shuffle:
+            self._build_order()
+        else:
+            self._order = list(range(len(self.items)))
+            # Continue from current track
+            if self.current_index >= 0:
+                self._order_pos = self.current_index + 1
+
     @property
     def active(self) -> bool:
         return self._running
@@ -84,6 +102,19 @@ class RadioEngine:
             'listeners': self.listeners,
             'shuffle': self.shuffle,
         }
+
+    def queue(self) -> list[dict]:
+        """Return the track list with current index marked."""
+        result = []
+        for i, item in enumerate(self.items):
+            result.append({
+                'index': i,
+                'title': item.get('title') or 'Untitled',
+                'duration': item.get('duration'),
+                'file_name': item.get('file_name'),
+                'current': i == self.current_index,
+            })
+        return result
 
     def subscribe(self) -> asyncio.Queue:
         q: asyncio.Queue = asyncio.Queue(maxsize=BUFFER_MAX)

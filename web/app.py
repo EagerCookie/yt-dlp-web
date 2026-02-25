@@ -829,9 +829,43 @@ async def radio_skip():
     return {'status': 'skipped'}
 
 
+class RadioJump(BaseModel):
+    index: int
+
+
+@app.post('/api/radio/jump')
+async def radio_jump(req: RadioJump):
+    radio = app.state.radio
+    if not radio.active:
+        raise HTTPException(status_code=400, detail='Radio is not active')
+    await radio.jump_to(req.index)
+    return {'status': 'jumping', 'index': req.index}
+
+
+class RadioShuffle(BaseModel):
+    shuffle: bool
+
+
+@app.post('/api/radio/shuffle')
+async def radio_shuffle(req: RadioShuffle):
+    radio = app.state.radio
+    if not radio.active:
+        raise HTTPException(status_code=400, detail='Radio is not active')
+    await radio.toggle_shuffle(req.shuffle)
+    return radio.status()
+
+
 @app.get('/api/radio/status')
 async def radio_status():
     return app.state.radio.status()
+
+
+@app.get('/api/radio/queue')
+async def radio_queue():
+    radio = app.state.radio
+    if not radio.active:
+        raise HTTPException(status_code=400, detail='Radio is not active')
+    return radio.queue()
 
 
 @app.get('/radio/stream')

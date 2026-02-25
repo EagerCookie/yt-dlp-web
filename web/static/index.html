@@ -228,23 +228,34 @@
 
     <!-- Radio bar (fixed, above player bar) -->
     <div id="radio-bar" class="radio-bar" hidden>
-        <div class="radio-indicator">
-            <span class="radio-live-dot"></span>
-            <span>LIVE</span>
+        <div class="radio-bar-main" onclick="toggleRadioPanel()">
+            <div class="radio-indicator">
+                <span class="radio-live-dot"></span>
+                <span>LIVE</span>
+            </div>
+            <div class="radio-info">
+                <span class="radio-playlist-name" id="radio-playlist-name"></span>
+                <span class="radio-now-playing" id="radio-now-playing">---</span>
+            </div>
+            <div class="radio-meta">
+                <span class="radio-track-pos" id="radio-track-pos"></span>
+                <span class="radio-duration" id="radio-duration"></span>
+                <span id="radio-listeners">0 listeners</span>
+            </div>
+            <div class="radio-actions" onclick="event.stopPropagation()">
+                <button class="radio-btn" id="radio-listen-btn" onclick="toggleRadioListen()" title="Listen in browser">&#128266;</button>
+                <button class="radio-btn" onclick="skipRadioTrack()" title="Skip track">&#9197;</button>
+                <button class="radio-btn" id="radio-shuffle-btn" onclick="toggleRadioShuffle()" title="Toggle shuffle">&#128256;</button>
+                <button class="radio-btn" onclick="copyRadioUrl()" title="Copy stream URL">&#128279;</button>
+                <button class="radio-btn radio-btn-stop" onclick="stopRadio()" title="Stop radio">&#9209;</button>
+            </div>
         </div>
-        <div class="radio-info">
-            <span class="radio-playlist-name" id="radio-playlist-name"></span>
-            <span class="radio-now-playing" id="radio-now-playing">---</span>
-        </div>
-        <div class="radio-meta">
-            <span class="radio-track-pos" id="radio-track-pos"></span>
-            <span class="radio-duration" id="radio-duration"></span>
-            <span id="radio-listeners">0 listeners</span>
-        </div>
-        <div class="radio-actions">
-            <button class="radio-btn" onclick="skipRadioTrack()" title="Skip track">&#9197;</button>
-            <button class="radio-btn" onclick="copyRadioUrl()" title="Copy stream URL">&#128279;</button>
-            <button class="radio-btn radio-btn-stop" onclick="stopRadio()" title="Stop radio">&#9209;</button>
+        <!-- Expandable radio panel -->
+        <div id="radio-panel" class="radio-panel" hidden>
+            <div class="radio-panel-header">
+                <span>Queue</span>
+            </div>
+            <div class="radio-queue" id="radio-queue"></div>
         </div>
     </div>
 

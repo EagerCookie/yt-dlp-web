@@ -42,7 +42,11 @@ const state = {
         playlistName: '',
         nowPlaying: null,
         listeners: 0,
+        shuffle: false,
         ws: null,
+        listening: false,   // browser audio connected to stream
+        panelOpen: false,
+        queue: [],
     },
 
     // Player state
@@ -891,7 +895,7 @@ function renderHistory(items, append) {
             : '';
 
         const playBtn = item.file_name && item.status === 'done'
-            ? `<button class="play-single-btn" onclick="playSingleFile(${escHtml(JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}))})" title="Play">&#9654;</button>`
+            ? `<button class="play-single-btn" data-play='${JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}).replace(/'/g, '&#39;')}' onclick="playSingleFile(JSON.parse(this.dataset.play))" title="Play">&#9654;</button>`
             : '';
 
         const statusClass = item.status === 'done' ? 'color: var(--success)'
@@ -1060,7 +1064,7 @@ function renderLibrary(append, newItems) {
                 <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${item.pinned ? 'Unpin' : 'Pin'}">&#9733;</button>
             </span>
             <span class="lib-actions">
-                <button class="play-single-btn" onclick="playSingleFile(${escHtml(JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}))})" title="Play">&#9654;</button>
+                <button class="play-single-btn" data-play='${JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}).replace(/'/g, '&#39;')}' onclick="playSingleFile(JSON.parse(this.dataset.play))" title="Play">&#9654;</button>
                 ${downloadBtn}
                 <button class="delete-btn" onclick="deleteJob('${item.id}')" style="border-color:var(--error);color:var(--error)">Del</button>
             </span>
@@ -2060,10 +2064,14 @@ async function startRadio(playlistId) {
 
 async function stopRadio() {
     try {
+        // Stop browser listening
+        stopRadioListen();
         await fetch('/api/radio/stop', { method: 'POST' });
         state.radio.active = false;
         state.radio.playlistId = null;
         state.radio.nowPlaying = null;
+        state.radio.queue = [];
+        state.radio.panelOpen = false;
         updateRadioUI();
         if (state.radio.ws) {
             state.radio.ws.close();
@@ -2117,12 +2125,17 @@ function updateRadioState(data) {
     state.radio.playlistName = data.playlist_name || '';
     state.radio.nowPlaying = data.now_playing;
     state.radio.listeners = data.listeners || 0;
+    state.radio.shuffle = data.shuffle || false;
     updateRadioUI();
     // Start/stop polling based on radio state
     if (data.active) {
         startRadioPolling();
+        // Load queue if panel is open
+        if (state.radio.panelOpen) loadRadioQueue();
     } else {
         stopRadioPolling();
+        state.radio.panelOpen = false;
+        state.radio.queue = [];
     }
     // Re-render playlist cards to update Radio button state
     if (state.currentView === 'playlists' && !state.playlists.activeId) {
@@ -2148,6 +2161,25 @@ function updateRadioUI() {
             $('radio-duration').textContent = '';
         }
         $('radio-listeners').textContent = `${state.radio.listeners} listener${state.radio.listeners !== 1 ? 's' : ''}`;
+
+        // Update listen button state
+        const listenBtn = $('radio-listen-btn');
+        if (listenBtn) {
+            listenBtn.classList.toggle('active', state.radio.listening);
+            listenBtn.title = state.radio.listening ? 'Stop listening' : 'Listen in browser';
+        }
+
+        // Update shuffle button state
+        const shuffleBtn = $('radio-shuffle-btn');
+        if (shuffleBtn) {
+            shuffleBtn.classList.toggle('active', state.radio.shuffle);
+        }
+
+        // Update queue if panel open
+        if (state.radio.panelOpen) {
+            $('radio-panel').hidden = false;
+            renderRadioQueue();
+        }
     } else {
         bar.hidden = true;
         document.body.classList.remove('radio-active');
@@ -2166,6 +2198,9 @@ function connectRadioWS() {
             if (data.stopped) {
                 state.radio.active = false;
                 state.radio.nowPlaying = null;
+                state.radio.queue = [];
+                state.radio.panelOpen = false;
+                stopRadioListen();
                 updateRadioUI();
                 ws.close();
                 state.radio.ws = null;
@@ -2173,6 +2208,8 @@ function connectRadioWS() {
             }
             state.radio.nowPlaying = data;
             updateRadioUI();
+            // Reload queue when track changes
+            if (state.radio.panelOpen) loadRadioQueue();
         } catch (err) {
             console.error('Radio WS parse error', err);
         }
@@ -2184,6 +2221,111 @@ function connectRadioWS() {
     ws.onerror = () => {
         state.radio.ws = null;
     };
+}
+
+// --- Radio: Listen in browser ---
+
+let _radioAudio = null;
+
+function toggleRadioListen() {
+    if (state.radio.listening) {
+        stopRadioListen();
+    } else {
+        startRadioListen();
+    }
+}
+
+function startRadioListen() {
+    if (_radioAudio) stopRadioListen();
+    _radioAudio = new Audio(`${location.origin}/radio/stream`);
+    _radioAudio.play().catch(e => console.error('Radio listen error', e));
+    state.radio.listening = true;
+    updateRadioUI();
+}
+
+function stopRadioListen() {
+    if (_radioAudio) {
+        _radioAudio.pause();
+        _radioAudio.src = '';
+        _radioAudio = null;
+    }
+    state.radio.listening = false;
+    updateRadioUI();
+}
+
+// --- Radio: Panel & Queue ---
+
+function toggleRadioPanel() {
+    state.radio.panelOpen = !state.radio.panelOpen;
+    $('radio-panel').hidden = !state.radio.panelOpen;
+    if (state.radio.panelOpen) {
+        loadRadioQueue();
+    }
+}
+
+async function loadRadioQueue() {
+    try {
+        const resp = await fetch('/api/radio/queue');
+        if (!resp.ok) return;
+        state.radio.queue = await resp.json();
+        renderRadioQueue();
+    } catch (e) {
+        console.error('Failed to load radio queue', e);
+    }
+}
+
+function renderRadioQueue() {
+    const container = $('radio-queue');
+    if (!container) return;
+    const queue = state.radio.queue;
+    if (queue.length === 0) {
+        container.innerHTML = '<p class="muted" style="padding:8px">No tracks</p>';
+        return;
+    }
+    container.innerHTML = queue.map(t => {
+        const currentClass = t.current ? ' radio-queue-current' : '';
+        const dur = t.duration ? formatDuration(t.duration) : '';
+        return `<div class="radio-queue-item${currentClass}" onclick="jumpRadioTrack(${t.index})">
+            <span class="radio-queue-num">${t.index + 1}</span>
+            <span class="radio-queue-title">${escHtml(t.title)}</span>
+            <span class="radio-queue-dur">${dur}</span>
+        </div>`;
+    }).join('');
+
+    // Scroll current track into view
+    const currentEl = container.querySelector('.radio-queue-current');
+    if (currentEl) {
+        currentEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
+
+async function jumpRadioTrack(index) {
+    try {
+        await fetch('/api/radio/jump', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ index }),
+        });
+    } catch (e) {
+        console.error('Failed to jump to track', e);
+    }
+}
+
+async function toggleRadioShuffle() {
+    const newShuffle = !state.radio.shuffle;
+    try {
+        const resp = await fetch('/api/radio/shuffle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ shuffle: newShuffle }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            updateRadioState(data);
+        }
+    } catch (e) {
+        console.error('Failed to toggle radio shuffle', e);
+    }
 }
 
 function copyRadioUrl() {

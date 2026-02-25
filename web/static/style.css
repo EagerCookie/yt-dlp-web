@@ -1480,13 +1480,19 @@ header h1 {
     right: 0;
     background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     border-top: 1px solid rgba(239, 68, 68, 0.3);
+    z-index: 151;
+    color: #e2e8f0;
+    display: flex;
+    flex-direction: column;
+}
+
+.radio-bar-main {
     display: flex;
     align-items: center;
     gap: 16px;
     padding: 8px 20px;
-    z-index: 151;
     height: 48px;
-    color: #e2e8f0;
+    cursor: pointer;
 }
 
 .radio-bar[hidden] {
@@ -1601,6 +1607,83 @@ body.radio-active:not(.player-active) .radio-bar {
 
 .radio-btn-stop:hover {
     color: #ef4444;
+}
+
+.radio-btn.active {
+    color: var(--accent);
+}
+
+/* Radio Panel (expandable queue) */
+
+.radio-panel {
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 0;
+}
+
+.radio-panel[hidden] {
+    display: none !important;
+}
+
+.radio-panel-header {
+    padding: 8px 20px 4px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #64748b;
+    font-weight: 600;
+}
+
+.radio-queue {
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 0 8px 8px;
+}
+
+.radio-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+}
+
+.radio-queue-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+.radio-queue-current {
+    background: rgba(99, 102, 241, 0.2);
+    color: #a5b4fc;
+}
+
+.radio-queue-num {
+    width: 24px;
+    text-align: right;
+    font-size: 11px;
+    color: #64748b;
+    flex-shrink: 0;
+}
+
+.radio-queue-current .radio-queue-num {
+    color: var(--accent);
+    font-weight: 700;
+}
+
+.radio-queue-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.radio-queue-dur {
+    font-size: 11px;
+    color: #64748b;
+    flex-shrink: 0;
 }
 
 /* ===== Player Bar ===== */
