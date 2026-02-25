@@ -59,8 +59,8 @@ class SnapClient {
                 this._onMessage(event.data);
             };
 
-            this._ws.onclose = () => {
-                console.log('[SnapClient] Disconnected');
+            this._ws.onclose = (event) => {
+                console.log('[SnapClient] Disconnected, code:', event.code, 'reason:', event.reason);
                 this._connected = false;
                 this._playing = false;
                 this._stopTimeSync();
@@ -146,6 +146,18 @@ class SnapClient {
         const sentUsec = view.getInt32(18, true);
         const size = view.getUint32(22, true);
 
+        const typeNames = {1:'CODEC',2:'WIRE_CHUNK',3:'SERVER_SETTINGS',4:'TIME',5:'HELLO'};
+        if (type !== MSG_WIRE_CHUNK) {  // don't spam for audio chunks
+            console.log(`[SnapClient] MSG type=${type}(${typeNames[type]||'?'}) id=${id} size=${size} bufLen=${data.byteLength}`);
+        }
+        if (!this._chunkCount) this._chunkCount = 0;
+        if (type === MSG_WIRE_CHUNK) {
+            this._chunkCount++;
+            if (this._chunkCount <= 5 || this._chunkCount % 100 === 0) {
+                console.log(`[SnapClient] WIRE_CHUNK #${this._chunkCount} size=${size} bufLen=${data.byteLength} pcmBytes=${data.byteLength - 38}`);
+            }
+        }
+
         switch (type) {
             case MSG_CODEC:
                 this._handleCodec(data);
@@ -160,6 +172,9 @@ class SnapClient {
                 // For time sync, we need the server's original send time
                 // which is at wire offset 6 (recvSec after the swap)
                 this._handleTime(recvSec, recvUsec, id);
+                break;
+            default:
+                console.log(`[SnapClient] Unknown message type: ${type}`);
                 break;
         }
     }
@@ -310,7 +325,7 @@ class SnapClient {
         new Uint8Array(buf, 30).set(encoded);
 
         this._ws.send(buf);
-        console.log('[SnapClient] Sent Hello, ID:', this._id);
+        console.log('[SnapClient] Sent Hello, ID:', this._id, 'bufSize:', buf.byteLength, 'sizeField:', HEADER_SIZE + payloadSize, 'jsonLen:', encoded.length);
     }
 
     _sendTimeResponse(serverSec, serverUsec) {
