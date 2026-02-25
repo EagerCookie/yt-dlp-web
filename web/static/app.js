@@ -2413,7 +2413,7 @@ function toggleSyncConnect() {
     if (client.connected) {
         client.disconnect();
     } else {
-        client.connect(location.hostname, 1704);
+        client.connect(location.hostname, 1780);
     }
     updateSyncUI();
 }

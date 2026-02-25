@@ -34,8 +34,8 @@ class SnapClient {
         this._onStateChange = null; // callback(connected: bool)
     }
 
-    /** Connect to snapserver stream WebSocket */
-    connect(host, port = 1704) {
+    /** Connect to snapserver stream WebSocket (via HTTP port) */
+    connect(host, port = 1780) {
         if (this._ws) this.disconnect();
 
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
