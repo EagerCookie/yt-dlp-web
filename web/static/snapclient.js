@@ -239,6 +239,8 @@ class SnapClient {
         if (!this._ctx || !this._gainNode) {
             this._initAudio();
         }
+        if (!this._chunkNum) this._chunkNum = 0;
+        this._chunkNum++;
 
         const view = new DataView(buffer);
         const chunkSec = view.getInt32(26, true);
@@ -251,7 +253,6 @@ class SnapClient {
 
         if (numFrames === 0) return;
 
-        // Audio data — always untouched, no sample manipulation
         const audioBuffer = this._ctx.createBuffer(this._channels, numFrames, this._sampleRate);
         for (let ch = 0; ch < this._channels; ch++) {
             const channelData = audioBuffer.getChannelData(ch);
@@ -263,23 +264,35 @@ class SnapClient {
         const now = this._ctx.currentTime;
         const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
         const idealTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000 - outputLatency;
+        const bufferAhead = this._nextPlayTime - now; // how far ahead our buffer is
+
+        let syncAction = 'none';
 
         if (this._nextPlayTime <= now) {
-            // First chunk or fallen behind — hard sync to server timestamp
+            syncAction = `HARD_RESET(behind=${((now - this._nextPlayTime)*1000).toFixed(1)}ms)`;
             this._nextPlayTime = Math.max(idealTime, now + 0.01);
         } else {
             const drift = this._nextPlayTime - idealTime;
             const absDrift = Math.abs(drift);
 
             if (absDrift > 0.05) {
-                // Hard resync > 50ms
+                syncAction = `HARD_RESYNC(drift=${(drift*1000).toFixed(1)}ms)`;
                 this._nextPlayTime = Math.max(idealTime, now + 0.01);
             } else if (absDrift > 0.005) {
-                // Soft sync 5-50ms: nudge _nextPlayTime toward ideal
-                // Move 10% of drift per chunk — smooth convergence, no audio artifacts
-                this._nextPlayTime -= drift * 0.1;
+                const nudge = drift * 0.1;
+                syncAction = `SOFT(drift=${(drift*1000).toFixed(1)}ms nudge=${(nudge*1000).toFixed(2)}ms)`;
+                this._nextPlayTime -= nudge;
             }
-            // < 5ms: no correction needed, within acceptable range
+        }
+
+        // --- DIAGNOSTICS ---
+        const durationMs = (numFrames / this._sampleRate * 1000).toFixed(1);
+        const drift = ((this._nextPlayTime - idealTime) * 1000).toFixed(1);
+
+        if (this._chunkNum <= 20 || syncAction !== 'none') {
+            console.log(`[DIAG] #${this._chunkNum} frames=${numFrames} dur=${durationMs}ms ahead=${(bufferAhead*1000).toFixed(1)}ms drift=${drift}ms timeDiff=${this._serverTimeDiff.toFixed(4)}s sync=${syncAction}`);
+        } else if (this._chunkNum % 100 === 0) {
+            console.log(`[DIAG] #${this._chunkNum} ahead=${(bufferAhead*1000).toFixed(1)}ms drift=${drift}ms timeDiff=${this._serverTimeDiff.toFixed(4)}s`);
         }
 
         const source = this._ctx.createBufferSource();
