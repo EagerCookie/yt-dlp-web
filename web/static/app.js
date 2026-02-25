@@ -2110,7 +2110,10 @@ async function pollRadioStatus() {
 let _radioPollingInterval = null;
 function startRadioPolling() {
     if (_radioPollingInterval) return;
-    _radioPollingInterval = setInterval(pollRadioStatus, 5000);
+    _radioPollingInterval = setInterval(() => {
+        pollRadioStatus();
+        loadSnapcastStatus();
+    }, 5000);
 }
 function stopRadioPolling() {
     if (_radioPollingInterval) {
@@ -2130,6 +2133,7 @@ function updateRadioState(data) {
     // Start/stop polling based on radio state
     if (data.active) {
         startRadioPolling();
+        loadSnapcastStatus();
         // Load queue if panel is open
         if (state.radio.panelOpen) loadRadioQueue();
     } else {
@@ -2174,6 +2178,14 @@ function updateRadioUI() {
         if (shuffleBtn) {
             shuffleBtn.classList.toggle('active', state.radio.shuffle);
         }
+
+        // Update sync button visibility
+        const syncBtn = $('radio-sync-btn');
+        if (syncBtn) {
+            syncBtn.hidden = !state.snapcast.enabled;
+        }
+        updateSyncBtnState();
+        updateSnapcastCounter();
 
         // Update queue if panel open
         if (state.radio.panelOpen) {
@@ -2348,6 +2360,51 @@ state.snapcast = {
     clients: [],
 };
 
+let _snapcastPopup = null;
+let _snapcastPopupCheck = null;
+
+function openSnapcastPlayer() {
+    const url = `http://${location.hostname}:1780`;
+    // If popup already open and not closed, focus it
+    if (_snapcastPopup && !_snapcastPopup.closed) {
+        _snapcastPopup.focus();
+        return;
+    }
+    _snapcastPopup = window.open(url, 'snapweb', 'width=420,height=320,resizable=yes');
+    updateSyncBtnState();
+    // Poll to detect when popup is closed
+    if (_snapcastPopupCheck) clearInterval(_snapcastPopupCheck);
+    _snapcastPopupCheck = setInterval(() => {
+        if (_snapcastPopup && _snapcastPopup.closed) {
+            _snapcastPopup = null;
+            clearInterval(_snapcastPopupCheck);
+            _snapcastPopupCheck = null;
+            updateSyncBtnState();
+        }
+    }, 1000);
+}
+
+function updateSyncBtnState() {
+    const btn = $('radio-sync-btn');
+    if (btn) {
+        const isOpen = _snapcastPopup && !_snapcastPopup.closed;
+        btn.classList.toggle('active', isOpen);
+        btn.title = isOpen ? 'Sync player open' : 'Open sync player';
+    }
+}
+
+function updateSnapcastCounter() {
+    const el = $('radio-snap-count');
+    if (!el) return;
+    const connected = state.snapcast.clients.filter(c => c.connected).length;
+    if (state.snapcast.enabled && connected > 0) {
+        el.textContent = `\u{1F4E1} ${connected}`;
+        el.hidden = false;
+    } else {
+        el.hidden = true;
+    }
+}
+
 async function loadSnapcastStatus() {
     try {
         const resp = await fetch('/api/snapcast/status');
@@ -2355,6 +2412,7 @@ async function loadSnapcastStatus() {
         const data = await resp.json();
         state.snapcast.enabled = data.enabled;
         state.snapcast.clients = data.clients || [];
+        updateSnapcastCounter();
         renderSnapcastClients();
     } catch (e) {
         console.error('Failed to load SnapCast status', e);

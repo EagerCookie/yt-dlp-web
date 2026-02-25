@@ -241,8 +241,10 @@
                 <span class="radio-track-pos" id="radio-track-pos"></span>
                 <span class="radio-duration" id="radio-duration"></span>
                 <span id="radio-listeners">0 listeners</span>
+                <span id="radio-snap-count" class="radio-snap-count" hidden></span>
             </div>
             <div class="radio-actions" onclick="event.stopPropagation()">
+                <button class="radio-btn" id="radio-sync-btn" onclick="openSnapcastPlayer()" title="Open sync player" hidden>&#128225;</button>
                 <button class="radio-btn" id="radio-listen-btn" onclick="toggleRadioListen()" title="Listen in browser">&#128266;</button>
                 <button class="radio-btn" onclick="skipRadioTrack()" title="Skip track">&#9197;</button>
                 <button class="radio-btn" id="radio-shuffle-btn" onclick="toggleRadioShuffle()" title="Toggle shuffle">&#128256;</button>

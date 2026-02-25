@@ -1579,6 +1579,13 @@ body.radio-active:not(.player-active) .radio-bar {
     color: #64748b;
 }
 
+.radio-snap-count {
+    font-size: 11px;
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 .radio-actions {
     display: flex;
     align-items: center;
