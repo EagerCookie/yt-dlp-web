@@ -168,8 +168,9 @@ class RadioEngine:
     async def _stream_loop(self):
         try:
             while self._running:
-                # Wait for at least one listener before starting FFmpeg
-                while self._running and not self._subscribers:
+                # Wait for at least one listener (HTTP or SnapCast) before starting FFmpeg
+                has_snapcast = self._snapcast and self._snapcast.enabled
+                while self._running and not self._subscribers and not has_snapcast:
                     await asyncio.sleep(0.5)
                 if not self._running:
                     break
@@ -226,10 +227,32 @@ class RadioEngine:
             log.error('Radio: failed to start ffmpeg: %s', e)
             return
 
+        # Start a second FFmpeg for SnapCast: PCM s16le → snapfifo
+        snap_proc = None
+        snap_task = None
+        if self._snapcast and self._snapcast.enabled:
+            try:
+                snap_proc = await asyncio.create_subprocess_exec(
+                    'ffmpeg', '-hide_banner', '-loglevel', 'error',
+                    '-re',
+                    '-threads', '1',
+                    '-i', file_path,
+                    '-vn',
+                    '-c:a', 'pcm_s16le', '-ac', '2', '-ar', '44100',
+                    '-f', 's16le',
+                    'pipe:1',
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                snap_task = asyncio.create_task(
+                    self._pipe_pcm_to_snapcast(snap_proc))
+            except Exception as e:
+                log.warning('Radio: failed to start snapcast ffmpeg: %s', e)
+
         try:
             while self._running and not self._skip_event.is_set():
-                # If all listeners disconnected, kill this FFmpeg and wait
-                if not self._subscribers:
+                # If all listeners disconnected and no snapcast, stop FFmpeg
+                if not self._subscribers and not (self._snapcast and self._snapcast.enabled):
                     break
                 try:
                     chunk = await asyncio.wait_for(
@@ -239,9 +262,6 @@ class RadioEngine:
                 if not chunk:
                     break  # Track finished
                 self._broadcast_chunk(chunk)
-                # Send same MP3 chunks to SnapCast via named pipe
-                if self._snapcast:
-                    self._snapcast.write_chunk(chunk)
         finally:
             if self._process and self._process.returncode is None:
                 try:
@@ -250,6 +270,32 @@ class RadioEngine:
                 except Exception:
                     pass
             self._process = None
+            # Clean up snapcast FFmpeg
+            if snap_task:
+                snap_task.cancel()
+                try:
+                    await snap_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            if snap_proc and snap_proc.returncode is None:
+                try:
+                    snap_proc.kill()
+                    await snap_proc.wait()
+                except Exception:
+                    pass
+
+    async def _pipe_pcm_to_snapcast(self, proc: asyncio.subprocess.Process):
+        """Read PCM chunks from FFmpeg and write to snapfifo."""
+        try:
+            while True:
+                chunk = await proc.stdout.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                self._snapcast.write_chunk(chunk)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.warning('Radio: snapcast PCM pipe error: %s', e)
 
     def _broadcast_chunk(self, chunk: bytes):
         dead = []

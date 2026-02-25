@@ -18,9 +18,14 @@ fi
 
 # Start snapserver in background
 echo "[entrypoint] Starting snapserver..."
-snapserver -c /etc/snapserver.conf --daemon 2>/dev/null \
-    && echo "[entrypoint] snapserver started" \
-    || echo "[entrypoint] WARNING: Failed to start snapserver"
+snapserver -c /etc/snapserver.conf &
+SNAP_PID=$!
+sleep 1
+if kill -0 $SNAP_PID 2>/dev/null; then
+    echo "[entrypoint] snapserver started (PID $SNAP_PID)"
+else
+    echo "[entrypoint] WARNING: snapserver failed to start"
+fi
 
 echo "[entrypoint] Starting web server..."
 exec uvicorn web.app:app --host 0.0.0.0 --port 8000
