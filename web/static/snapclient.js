@@ -185,14 +185,6 @@ class SnapClient {
         }
     }
 
-    /** Convert server timestamp (seconds) to AudioContext time */
-    _serverToCtxTime(serverTimeSec) {
-        const nowWall = Date.now() / 1000;
-        const nowCtx = this._ctx.currentTime;
-        const localWallTime = serverTimeSec - this._serverTimeDiff;
-        return nowCtx + (localWallTime - nowWall);
-    }
-
     // --- Binary protocol ---
 
     _onMessage(data) {
@@ -239,13 +231,6 @@ class SnapClient {
         if (!this._ctx || !this._gainNode) {
             this._initAudio();
         }
-        if (!this._chunkNum) this._chunkNum = 0;
-        this._chunkNum++;
-
-        const view = new DataView(buffer);
-        const chunkSec = view.getInt32(26, true);
-        const chunkUsec = view.getInt32(30, true);
-        const chunkServerTime = chunkSec + chunkUsec / 1e6;
 
         const pcmData = new Int16Array(buffer.slice(38));
         const numSamples = pcmData.length;
@@ -262,39 +247,13 @@ class SnapClient {
         }
 
         const now = this._ctx.currentTime;
-        const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
-        const idealTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000 - outputLatency;
-        const bufferAhead = this._nextPlayTime - now; // how far ahead our buffer is
-
-        let syncAction = 'none';
 
         if (this._nextPlayTime <= now) {
-            syncAction = `HARD_RESET(behind=${((now - this._nextPlayTime)*1000).toFixed(1)}ms)`;
-            this._nextPlayTime = Math.max(idealTime, now + 0.01);
-        } else {
-            const drift = this._nextPlayTime - idealTime;
-            const absDrift = Math.abs(drift);
-
-            if (absDrift > 0.05) {
-                syncAction = `HARD_RESYNC(drift=${(drift*1000).toFixed(1)}ms)`;
-                this._nextPlayTime = Math.max(idealTime, now + 0.01);
-            } else if (absDrift > 0.005) {
-                const nudge = drift * 0.1;
-                syncAction = `SOFT(drift=${(drift*1000).toFixed(1)}ms nudge=${(nudge*1000).toFixed(2)}ms)`;
-                this._nextPlayTime -= nudge;
-            }
+            // First chunk or fallen behind — start with bufferMs delay for sync
+            this._nextPlayTime = now + this._bufferMs / 1000;
         }
 
-        // --- DIAGNOSTICS ---
-        const durationMs = (numFrames / this._sampleRate * 1000).toFixed(1);
-        const drift = ((this._nextPlayTime - idealTime) * 1000).toFixed(1);
-
-        if (this._chunkNum <= 20 || syncAction !== 'none') {
-            console.log(`[DIAG] #${this._chunkNum} frames=${numFrames} dur=${durationMs}ms ahead=${(bufferAhead*1000).toFixed(1)}ms drift=${drift}ms timeDiff=${this._serverTimeDiff.toFixed(4)}s sync=${syncAction}`);
-        } else if (this._chunkNum % 100 === 0) {
-            console.log(`[DIAG] #${this._chunkNum} ahead=${(bufferAhead*1000).toFixed(1)}ms drift=${drift}ms timeDiff=${this._serverTimeDiff.toFixed(4)}s`);
-        }
-
+        // Pure gapless playback — no drift correction, no timeline nudging
         const source = this._ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this._gainNode);
