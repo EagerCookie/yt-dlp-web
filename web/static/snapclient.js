@@ -34,12 +34,30 @@ class SnapClient {
         this._nextPlayTime = 0;    // next gapless play time on AudioContext timeline
         this._id = this._generateId();
         this._onStateChange = null; // callback(connected: bool)
+
+        // Auto-reconnect state
+        this._autoReconnect = false;
+        this._reconnectHost = null;
+        this._reconnectPort = null;
+        this._reconnectTimer = null;
+        this._reconnectDelay = 1000;  // start with 1s, max 10s
+        this._volume = 100;           // remember volume across reconnects
     }
 
     /** Connect to snapserver stream WebSocket (via HTTP port) */
     connect(host, port = 1780) {
-        if (this._ws) this.disconnect();
+        if (this._ws) this._closeWs();
 
+        this._autoReconnect = true;
+        this._reconnectHost = host;
+        this._reconnectPort = port;
+        this._reconnectDelay = 1000;
+        this._clearReconnectTimer();
+
+        this._doConnect(host, port);
+    }
+
+    _doConnect(host, port) {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${proto}//${host}:${port}/stream`;
 
@@ -50,6 +68,7 @@ class SnapClient {
             this._ws.onopen = () => {
                 console.log('[SnapClient] Connected to', url);
                 this._connected = true;
+                this._reconnectDelay = 1000; // reset backoff on success
                 this._sendHello();
                 this._startTimeSync();
                 this._notify();
@@ -61,10 +80,17 @@ class SnapClient {
 
             this._ws.onclose = () => {
                 console.log('[SnapClient] Disconnected');
+                const wasConnected = this._connected;
                 this._connected = false;
                 this._playing = false;
                 this._stopTimeSync();
+                this._nextPlayTime = 0;
                 this._notify();
+
+                // Auto-reconnect if we didn't manually disconnect
+                if (this._autoReconnect) {
+                    this._scheduleReconnect();
+                }
             };
 
             this._ws.onerror = (err) => {
@@ -72,16 +98,46 @@ class SnapClient {
             };
         } catch (e) {
             console.error('[SnapClient] Failed to connect:', e);
+            if (this._autoReconnect) {
+                this._scheduleReconnect();
+            }
         }
     }
 
-    /** Disconnect and stop playback */
-    disconnect() {
+    _scheduleReconnect() {
+        this._clearReconnectTimer();
+        console.log(`[SnapClient] Reconnecting in ${this._reconnectDelay}ms...`);
+        this._reconnectTimer = setTimeout(() => {
+            this._reconnectTimer = null;
+            if (this._autoReconnect) {
+                this._doConnect(this._reconnectHost, this._reconnectPort);
+            }
+        }, this._reconnectDelay);
+        // Backoff: 1s → 2s → 4s → 8s → 10s max
+        this._reconnectDelay = Math.min(this._reconnectDelay * 2, 10000);
+    }
+
+    _clearReconnectTimer() {
+        if (this._reconnectTimer) {
+            clearTimeout(this._reconnectTimer);
+            this._reconnectTimer = null;
+        }
+    }
+
+    _closeWs() {
         this._stopTimeSync();
         if (this._ws) {
+            this._ws.onclose = null; // prevent reconnect trigger
             this._ws.close();
             this._ws = null;
         }
+    }
+
+    /** Disconnect and stop playback (manual — disables auto-reconnect) */
+    disconnect() {
+        this._autoReconnect = false;
+        this._clearReconnectTimer();
+        this._closeWs();
         if (this._ctx) {
             this._ctx.close().catch(() => {});
             this._ctx = null;
@@ -96,8 +152,9 @@ class SnapClient {
 
     /** Set volume (0-100) */
     setVolume(vol) {
+        this._volume = Math.max(0, Math.min(100, vol));
         if (this._gainNode) {
-            this._gainNode.gain.value = Math.max(0, Math.min(1, vol / 100));
+            this._gainNode.gain.value = this._volume / 100;
         }
     }
 
@@ -121,21 +178,15 @@ class SnapClient {
         if (this._ctx) return;
         this._ctx = new AudioContext({ sampleRate: this._sampleRate });
         this._gainNode = this._ctx.createGain();
+        this._gainNode.gain.value = this._volume / 100;
         this._gainNode.connect(this._ctx.destination);
         if (this._ctx.state === 'suspended') {
             this._ctx.resume();
         }
-        // Capture AudioContext creation wall-clock for time mapping
-        this._ctxCreateTime = Date.now() / 1000;
     }
 
     /** Convert server timestamp (seconds) to AudioContext time */
     _serverToCtxTime(serverTimeSec) {
-        // serverTimeSec is in server clock domain
-        // _serverTimeDiff = serverClock - wallClock (seconds)
-        // So local wall time = serverTimeSec - _serverTimeDiff
-        // AudioContext time = wallClock - _ctxCreateTime (approx, plus ctx.currentTime drift)
-        // More accurately: ctx.currentTime corresponds to Date.now()/1000 right now
         const nowWall = Date.now() / 1000;
         const nowCtx = this._ctx.currentTime;
         const localWallTime = serverTimeSec - this._serverTimeDiff;
@@ -149,7 +200,6 @@ class SnapClient {
 
         const view = new DataView(data);
         const type = view.getUint16(0, true);
-        // Wire offset 6 is read as "received" after deserialize swap
         const recvSec = view.getInt32(6, true);
         const recvUsec = view.getInt32(10, true);
 
@@ -191,13 +241,10 @@ class SnapClient {
         }
 
         const view = new DataView(buffer);
-        // Chunk timestamp from server (when this audio should play)
         const chunkSec = view.getInt32(26, true);
         const chunkUsec = view.getInt32(30, true);
         const chunkServerTime = chunkSec + chunkUsec / 1e6;
 
-        // Offset 34: payload size (uint32)
-        // Offset 38+: raw PCM data
         const pcmData = new Int16Array(buffer.slice(38));
         const numSamples = pcmData.length;
         const numFrames = Math.floor(numSamples / this._channels);
@@ -206,7 +253,6 @@ class SnapClient {
 
         const audioBuffer = this._ctx.createBuffer(this._channels, numFrames, this._sampleRate);
 
-        // Deinterleave and convert Int16 → Float32
         for (let ch = 0; ch < this._channels; ch++) {
             const channelData = audioBuffer.getChannelData(ch);
             for (let i = 0; i < numFrames; i++) {
@@ -215,32 +261,25 @@ class SnapClient {
         }
 
         const now = this._ctx.currentTime;
-
-        // Calculate ideal play time from server timestamp for sync reference
         const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
         const idealTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000 - outputLatency;
 
         if (this._nextPlayTime <= now) {
-            // First chunk or fallen behind — use server timestamp to establish sync point
-            // This is the initial delay that allows synchronization with other clients
+            // First chunk or fallen behind — sync to server timestamp
             this._nextPlayTime = Math.max(idealTime, now + 0.01);
         } else {
-            // Check drift between sequential scheduling and server timestamps
+            // Check drift between gapless scheduling and server timestamps
             const drift = this._nextPlayTime - idealTime;
             if (Math.abs(drift) > 0.1) {
-                // Drift > 100ms — hard resync to server timestamp
+                // Drift > 100ms — hard resync
                 this._nextPlayTime = Math.max(idealTime, now + 0.01);
             }
-            // Otherwise keep gapless sequential scheduling (no crackling)
         }
 
-        // Schedule playback — gapless: each chunk starts exactly where previous ended
         const source = this._ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this._gainNode);
         source.start(this._nextPlayTime);
-
-        // Advance play time by exact buffer duration for gapless playback
         this._nextPlayTime += audioBuffer.duration;
 
         if (!this._playing) {
@@ -259,12 +298,6 @@ class SnapClient {
             if (settings.bufferMs !== undefined) {
                 this._bufferMs = settings.bufferMs;
             }
-            if (settings.volume !== undefined) {
-                this.setVolume(settings.volume);
-            }
-            if (settings.muted) {
-                this.setVolume(0);
-            }
             console.log('[SnapClient] Server settings:', settings);
         } catch (e) {
             console.warn('[SnapClient] Failed to parse server settings:', e);
@@ -272,19 +305,13 @@ class SnapClient {
     }
 
     _handleTime(sentSec, sentUsec) {
-        // NTP-style time sync
-        // Server sent its time at (sentSec, sentUsec)
-        // We received it now — calculate offset
         const nowMs = Date.now();
         const serverTimeMs = sentSec * 1000 + sentUsec / 1000;
-
-        // Simple offset: server_time - local_time (in seconds)
         const offset = (serverTimeMs - nowMs) / 1000;
         this._timeOffsets.push(offset);
         if (this._timeOffsets.length > 100) {
             this._timeOffsets.shift();
         }
-        // Use median for stability
         const sorted = [...this._timeOffsets].sort((a, b) => a - b);
         this._serverTimeDiff = sorted[Math.floor(sorted.length / 2)];
 

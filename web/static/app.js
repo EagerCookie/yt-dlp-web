@@ -2388,6 +2388,8 @@ function openSnapcastPlayer() {
     toggleSyncPanel();
 }
 
+let _syncRefreshInterval = null;
+
 function toggleSyncPanel() {
     _syncPanelOpen = !_syncPanelOpen;
     const section = $('sync-section');
@@ -2402,8 +2404,14 @@ function toggleSyncPanel() {
         }
         section.hidden = false;
         loadSnapcastStatus();
+        // Periodic refresh while panel is open
+        _syncRefreshInterval = setInterval(loadSnapcastStatus, 5000);
     } else {
         section.hidden = true;
+        if (_syncRefreshInterval) {
+            clearInterval(_syncRefreshInterval);
+            _syncRefreshInterval = null;
+        }
     }
     updateSyncBtnState();
 }
@@ -2483,16 +2491,16 @@ async function loadSnapcastStatus() {
 function renderSyncClients() {
     const container = $('sync-clients');
     if (!container) return;
-    const clients = state.snapcast.clients;
+    // Only show connected clients (snapserver keeps stale disconnected entries)
+    const clients = state.snapcast.clients.filter(c => c.connected);
     if (clients.length === 0) {
         container.innerHTML = '<p class="muted" style="padding:4px 0;font-size:11px">No clients connected</p>';
         return;
     }
     container.innerHTML = clients.map(c => {
-        const statusDot = c.connected ? 'sync-client-online' : 'sync-client-offline';
         const muteIcon = c.muted ? '&#128263;' : '&#128266;';
         return `<div class="sync-client">
-            <span class="sync-client-dot ${statusDot}"></span>
+            <span class="sync-client-dot sync-client-online"></span>
             <span class="sync-client-name">${escHtml(c.name)}</span>
             <input type="range" class="volume-slider sync-client-vol" min="0" max="100" value="${c.volume}" step="1"
                    onchange="setSnapClientVolume('${escHtml(c.id)}', this.value)" title="Volume: ${c.volume}%">
