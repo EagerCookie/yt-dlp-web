@@ -2260,6 +2260,7 @@ function toggleRadioPanel() {
     $('radio-panel').hidden = !state.radio.panelOpen;
     if (state.radio.panelOpen) {
         loadRadioQueue();
+        loadSnapcastStatus();
     }
 }
 
@@ -2338,6 +2339,94 @@ function copyRadioUrl() {
             setTimeout(() => btn.innerHTML = orig, 1500);
         }
     }).catch(() => {});
+}
+
+// --- SnapCast: Sync Clients ---
+
+state.snapcast = {
+    enabled: false,
+    clients: [],
+};
+
+async function loadSnapcastStatus() {
+    try {
+        const resp = await fetch('/api/snapcast/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        state.snapcast.enabled = data.enabled;
+        state.snapcast.clients = data.clients || [];
+        renderSnapcastClients();
+    } catch (e) {
+        console.error('Failed to load SnapCast status', e);
+    }
+}
+
+function renderSnapcastClients() {
+    const section = $('snapcast-section');
+    if (!section) return;
+
+    if (!state.snapcast.enabled) {
+        section.hidden = true;
+        return;
+    }
+    section.hidden = false;
+
+    // Set snapweb link
+    const link = $('snapweb-link');
+    if (link) {
+        link.href = `http://${location.hostname}:1780`;
+    }
+
+    const container = $('snapcast-clients');
+    if (!container) return;
+
+    const clients = state.snapcast.clients;
+    if (clients.length === 0) {
+        container.innerHTML = '<span class="muted" style="padding:8px 12px;display:block;font-size:12px">No clients connected. Open snapweb to add one.</span>';
+        return;
+    }
+
+    container.innerHTML = clients.map(c => {
+        const dotClass = c.connected ? 'connected' : 'disconnected';
+        const muteClass = c.muted ? ' muted' : '';
+        const muteIcon = c.muted ? '&#128263;' : '&#128266;';
+        return `<div class="snapcast-client">
+            <span class="snapcast-client-dot ${dotClass}"></span>
+            <span class="snapcast-client-name">${escHtml(c.name)}</span>
+            <div class="snapcast-client-volume">
+                <input type="range" class="snapcast-volume-slider" min="0" max="100" value="${c.volume}"
+                    onchange="setSnapcastVolume('${escHtml(c.id)}', parseInt(this.value))">
+            </div>
+            <button class="snapcast-mute-btn${muteClass}" onclick="toggleSnapcastMute('${escHtml(c.id)}', ${!c.muted})"
+                title="${c.muted ? 'Unmute' : 'Mute'}">${muteIcon}</button>
+        </div>`;
+    }).join('');
+}
+
+async function setSnapcastVolume(clientId, volume) {
+    try {
+        await fetch('/api/snapcast/volume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, volume }),
+        });
+    } catch (e) {
+        console.error('Failed to set SnapCast volume', e);
+    }
+}
+
+async function toggleSnapcastMute(clientId, muted) {
+    try {
+        await fetch('/api/snapcast/mute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, muted }),
+        });
+        // Refresh status after toggle
+        setTimeout(loadSnapcastStatus, 300);
+    } catch (e) {
+        console.error('Failed to toggle SnapCast mute', e);
+    }
 }
 
 // ===== Init =====

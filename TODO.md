@@ -60,12 +60,17 @@
 - [x] Fix: player bar visible on initial page load (should be hidden until playlist playback starts)
 - [x] Play single file from Library/History list (without creating a playlist)
 - [x] Auto-update yt-dlp version display (check PyPI, show update indicator)
+- [ ] Fix: иконка локального воспроизведения радио не отображает актуальный статус
+- [ ] Проверка дубликатов перед загрузкой (предупреждение если URL уже скачан)
 
 ## Synchronized Playback
-- [ ] Branch `sync-snapcast`: SnapCast integration
-  - Multi-room synchronized audio playback
-  - SnapCast server managed within Docker container
-  - Client discovery and zone management
+- [x] Branch `sync-snapcast`: SnapCast integration
+  - Multi-room synchronized audio playback (~20ms accuracy)
+  - SnapCast server managed within Docker container (snapserver + snapweb)
+  - Named pipe `/tmp/snapfifo` feeds MP3 chunks to snapserver
+  - snapweb browser client on port 1780
+  - Client list with volume/mute controls in radio panel
+  - JSON-RPC proxy for snapserver API
 - [ ] Branch `sync-opensound`: OpenSound integration
   - Alternative sync playback implementation
   - Compare latency and quality with SnapCast

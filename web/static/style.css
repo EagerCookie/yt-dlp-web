@@ -1686,6 +1686,127 @@ body.radio-active:not(.player-active) .radio-bar {
     flex-shrink: 0;
 }
 
+/* Radio Sync Section (SnapCast) */
+
+.radio-sync-section {
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.radio-sync-section[hidden] {
+    display: none !important;
+}
+
+.radio-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.snapweb-link {
+    font-size: 11px;
+    color: var(--accent);
+    text-decoration: none;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--accent);
+    transition: background 0.15s, color 0.15s;
+}
+
+.snapweb-link:hover {
+    background: var(--accent);
+    color: #fff;
+}
+
+.snapcast-clients {
+    padding: 0 8px 8px;
+}
+
+.snapcast-client {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.snapcast-client-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.snapcast-client-dot.connected {
+    background: var(--success);
+}
+
+.snapcast-client-dot.disconnected {
+    background: var(--text-muted);
+}
+
+.snapcast-client-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.snapcast-client-volume {
+    width: 80px;
+    flex-shrink: 0;
+}
+
+.snapcast-volume-slider {
+    width: 100%;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+}
+
+.snapcast-volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #94a3b8;
+    cursor: pointer;
+}
+
+.snapcast-volume-slider::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #94a3b8;
+    cursor: pointer;
+    border: none;
+}
+
+.snapcast-mute-btn {
+    background: none;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 4px;
+    font-size: 14px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: color 0.15s;
+}
+
+.snapcast-mute-btn:hover {
+    color: #e2e8f0;
+}
+
+.snapcast-mute-btn.muted {
+    color: var(--error);
+}
+
 /* ===== Player Bar ===== */
 
 .player-bar {

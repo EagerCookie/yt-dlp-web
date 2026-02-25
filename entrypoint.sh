@@ -9,6 +9,18 @@ if [ "${UPDATE_YTDLP_ON_START:-true}" = "true" ]; then
 fi
 
 echo "[entrypoint] yt-dlp version: $(python -c 'import yt_dlp; print(yt_dlp.version.__version__)')"
-echo "[entrypoint] Starting web server..."
 
+# Create named pipe for SnapCast if not exists
+if [ ! -p /tmp/snapfifo ]; then
+    mkfifo /tmp/snapfifo
+    echo "[entrypoint] Created /tmp/snapfifo"
+fi
+
+# Start snapserver in background
+echo "[entrypoint] Starting snapserver..."
+snapserver -c /etc/snapserver.conf --daemon 2>/dev/null \
+    && echo "[entrypoint] snapserver started" \
+    || echo "[entrypoint] WARNING: Failed to start snapserver"
+
+echo "[entrypoint] Starting web server..."
 exec uvicorn web.app:app --host 0.0.0.0 --port 8000

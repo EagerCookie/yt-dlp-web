@@ -56,6 +56,7 @@ logger = logging.getLogger('yt-dlp-web')
 CLEANUP_HOURS = int(os.environ.get('CLEANUP_AFTER_HOURS', '0'))
 
 from web.radio import RadioEngine  # noqa: E402
+from web.snapcast import SnapcastManager  # noqa: E402
 
 
 def _remove_thumbnail(row: dict) -> None:
@@ -245,6 +246,12 @@ async def lifespan(app: FastAPI):
     app.state.active_tasks: dict[str, asyncio.Task] = {}
     app.state.cancel_events: dict[str, threading.Event] = {}
 
+    # SnapCast integration
+    snapcast = SnapcastManager()
+    await snapcast.start()
+    app.state.snapcast = snapcast
+    app.state.radio.set_snapcast(snapcast)
+
     cleanup_task = None
     if CLEANUP_HOURS > 0:
         cleanup_task = asyncio.create_task(
@@ -255,6 +262,7 @@ async def lifespan(app: FastAPI):
     if cleanup_task:
         cleanup_task.cancel()
     await app.state.radio.stop()
+    await snapcast.stop()
     executor.shutdown(wait=False)
     await db.close()
 
@@ -883,6 +891,46 @@ async def radio_stream():
             'icy-name': radio.playlist_name,
         },
     )
+
+
+# --- SnapCast endpoints ---
+
+
+@app.get('/api/snapcast/status')
+async def snapcast_status():
+    sc = app.state.snapcast
+    return {
+        'enabled': sc.enabled,
+        'clients': await sc.get_clients() if sc.enabled else [],
+    }
+
+
+class SnapcastVolume(BaseModel):
+    client_id: str
+    volume: int
+
+
+@app.post('/api/snapcast/volume')
+async def snapcast_set_volume(req: SnapcastVolume):
+    sc = app.state.snapcast
+    if not sc.enabled:
+        raise HTTPException(status_code=400, detail='SnapCast is not enabled')
+    await sc.set_client_volume(req.client_id, req.volume)
+    return {'status': 'ok'}
+
+
+class SnapcastMute(BaseModel):
+    client_id: str
+    muted: bool
+
+
+@app.post('/api/snapcast/mute')
+async def snapcast_set_mute(req: SnapcastMute):
+    sc = app.state.snapcast
+    if not sc.enabled:
+        raise HTTPException(status_code=400, detail='SnapCast is not enabled')
+    await sc.set_client_mute(req.client_id, req.muted)
+    return {'status': 'ok'}
 
 
 # --- WebSocket endpoints ---

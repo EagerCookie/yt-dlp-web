@@ -2,7 +2,10 @@ services:
   yt-dlp-web:
     build: .
     ports:
-      - "8000:8000"
+      - "8000:8000"     # Web UI + API
+      - "1704:1704"     # SnapCast audio stream
+      - "1705:1705"     # SnapCast control (JSON-RPC)
+      - "1780:1780"     # snapweb HTTP
     volumes:
       - downloads:/downloads
       - db_data:/data

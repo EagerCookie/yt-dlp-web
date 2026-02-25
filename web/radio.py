@@ -28,6 +28,11 @@ class RadioEngine:
         self._subscribers: list[asyncio.Queue] = []
         self._lock: asyncio.Lock = asyncio.Lock()
         self._on_track_change = None  # callback: async def(now_playing: dict)
+        self._snapcast = None  # SnapcastManager instance (injected from app.py)
+
+    def set_snapcast(self, manager):
+        """Inject SnapcastManager for synchronized playback."""
+        self._snapcast = manager
 
     # --- Public API ---
 
@@ -234,6 +239,9 @@ class RadioEngine:
                 if not chunk:
                     break  # Track finished
                 self._broadcast_chunk(chunk)
+                # Send same MP3 chunks to SnapCast via named pipe
+                if self._snapcast:
+                    self._snapcast.write_chunk(chunk)
         finally:
             if self._process and self._process.returncode is None:
                 try:
