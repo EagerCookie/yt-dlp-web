@@ -138,10 +138,12 @@ class SnapClient {
         const type = view.getUint16(0, true);
         const id = view.getUint16(2, true);
         const refersTo = view.getUint16(4, true);
-        const sentSec = view.getInt32(6, true);
-        const sentUsec = view.getInt32(10, true);
-        const recvSec = view.getInt32(14, true);
-        const recvUsec = view.getInt32(18, true);
+        // Note: snapcast deserialize swaps sent/received!
+        // Wire offset 6 is read as "received", offset 14 as "sent"
+        const recvSec = view.getInt32(6, true);   // server wrote this as "sent"
+        const recvUsec = view.getInt32(10, true);
+        const sentSec = view.getInt32(14, true);   // server wrote this as "received"
+        const sentUsec = view.getInt32(18, true);
         const size = view.getUint32(22, true);
 
         switch (type) {
@@ -155,7 +157,9 @@ class SnapClient {
                 this._handleServerSettings(data);
                 break;
             case MSG_TIME:
-                this._handleTime(sentSec, sentUsec, id);
+                // For time sync, we need the server's original send time
+                // which is at wire offset 6 (recvSec after the swap)
+                this._handleTime(recvSec, recvUsec, id);
                 break;
         }
     }
@@ -299,7 +303,7 @@ class SnapClient {
         view.setInt32(10, usec, true);
         view.setInt32(14, 0, true);
         view.setInt32(18, 0, true);
-        view.setUint32(22, payloadSize, true);
+        view.setUint32(22, HEADER_SIZE + payloadSize, true);  // size = total message size
 
         // Payload: uint32 json length + json bytes
         view.setUint32(26, encoded.length, true);
@@ -319,15 +323,16 @@ class SnapClient {
         const sec = Math.floor(now);
         const usec = Math.floor((now - sec) * 1e6);
 
-        // Header
+        // Header — note: in snapcast wire format, offset 6 = sent, offset 14 = received
+        // but deserialize swaps them (offset 6 → received, offset 14 → sent)
         view.setUint16(0, MSG_TIME, true);
         view.setUint16(2, ++this._msgId, true);
         view.setUint16(4, 0, true);
-        view.setInt32(6, sec, true);            // sent.sec (client send time)
-        view.setInt32(10, usec, true);          // sent.usec
-        view.setInt32(14, serverSec, true);     // received.sec (server's sent time)
-        view.setInt32(18, serverUsec, true);    // received.usec
-        view.setUint32(22, 8, true);            // payload size
+        view.setInt32(6, sec, true);            // wire "sent" = our send time
+        view.setInt32(10, usec, true);
+        view.setInt32(14, serverSec, true);     // wire "received" = server's original time
+        view.setInt32(18, serverUsec, true);
+        view.setUint32(22, HEADER_SIZE + 8, true);  // size = total message size (34)
 
         // Payload: latency (zeros)
         view.setInt32(26, 0, true);
@@ -354,7 +359,7 @@ class SnapClient {
                 view.setInt32(10, usec, true);
                 view.setInt32(14, 0, true);
                 view.setInt32(18, 0, true);
-                view.setUint32(22, 8, true);
+                view.setUint32(22, HEADER_SIZE + 8, true);  // size = total (34)
                 view.setInt32(26, 0, true);
                 view.setInt32(30, 0, true);
 
