@@ -3,6 +3,8 @@
  * via WebSocket binary protocol and plays PCM audio through Web Audio API.
  *
  * Only supports PCM s16le codec (which is what our snapserver uses).
+ *
+ * Protocol reference: https://github.com/badaix/snapweb/blob/master/src/snapstream.ts
  */
 
 // Message types
@@ -142,17 +144,15 @@ class SnapClient {
         const recvUsec = view.getInt32(18, true);
         const size = view.getUint32(22, true);
 
-        const payload = data.slice(HEADER_SIZE);
-
         switch (type) {
             case MSG_CODEC:
-                this._handleCodec(payload);
+                this._handleCodec(data);
                 break;
             case MSG_WIRE_CHUNK:
-                this._handleWireChunk(payload);
+                this._handleWireChunk(data);
                 break;
             case MSG_SERVER_SETTINGS:
-                this._handleServerSettings(payload);
+                this._handleServerSettings(data);
                 break;
             case MSG_TIME:
                 this._handleTime(sentSec, sentUsec, id);
@@ -160,49 +160,46 @@ class SnapClient {
         }
     }
 
-    _handleCodec(payload) {
-        const view = new DataView(payload);
-        const codecSize = view.getUint32(0, true);
-        const codecBytes = new Uint8Array(payload, 4, codecSize);
+    _handleCodec(buffer) {
+        const view = new DataView(buffer);
+        // Offset 26: uint32 codec string length
+        const codecSize = view.getUint32(26, true);
+        const codecBytes = new Uint8Array(buffer, 30, codecSize);
         this._codec = new TextDecoder().decode(codecBytes);
         console.log('[SnapClient] Codec:', this._codec);
 
         if (this._codec === 'pcm') {
-            // Parse PCM header from payload after codec string
-            const headerSize = view.getUint32(4 + codecSize, true);
-            if (headerSize >= 12) {
-                const headerData = new DataView(payload, 8 + codecSize);
-                // PCM header: typically contains sample format info
-                // We'll use our known settings: 44100 Hz, 16-bit, 2 channels
-            }
+            // Parse PCM header after codec string
+            const headerOffset = 30 + codecSize;
+            const headerSize = view.getUint32(headerOffset, true);
+            // PCM header is optional, we use known settings
         }
 
         this._initAudio();
     }
 
-    _handleWireChunk(payload) {
+    _handleWireChunk(buffer) {
         if (!this._ctx || !this._gainNode) {
             this._initAudio();
         }
 
-        const view = new DataView(payload);
-        // Timestamp: sec + usec
-        const chunkSec = view.getInt32(0, true);
-        const chunkUsec = view.getInt32(4, true);
-
-        // PCM data starts after timestamp (8 bytes)
-        const pcmData = new Int16Array(payload.slice(8));
+        const view = new DataView(buffer);
+        // Offset 26: timestamp sec (int32)
+        // Offset 30: timestamp usec (int32)
+        // Offset 34: payload size (uint32) — present but we skip it
+        // Offset 38+: raw PCM data
+        const pcmData = new Int16Array(buffer.slice(38));
         const numSamples = pcmData.length;
         const numFrames = Math.floor(numSamples / this._channels);
 
         if (numFrames === 0) return;
 
         // Create audio buffer
-        const buffer = this._ctx.createBuffer(this._channels, numFrames, this._sampleRate);
+        const audioBuffer = this._ctx.createBuffer(this._channels, numFrames, this._sampleRate);
 
         // Deinterleave and convert Int16 → Float32
         for (let ch = 0; ch < this._channels; ch++) {
-            const channelData = buffer.getChannelData(ch);
+            const channelData = audioBuffer.getChannelData(ch);
             for (let i = 0; i < numFrames; i++) {
                 channelData[i] = pcmData[i * this._channels + ch] / 32768.0;
             }
@@ -210,7 +207,7 @@ class SnapClient {
 
         // Schedule playback
         const source = this._ctx.createBufferSource();
-        source.buffer = buffer;
+        source.buffer = audioBuffer;
         source.connect(this._gainNode);
 
         const now = this._ctx.currentTime;
@@ -220,7 +217,7 @@ class SnapClient {
         }
 
         source.start(this._playTime);
-        this._playTime += buffer.duration;
+        this._playTime += audioBuffer.duration;
 
         if (!this._playing) {
             this._playing = true;
@@ -228,9 +225,14 @@ class SnapClient {
         }
     }
 
-    _handleServerSettings(payload) {
+    _handleServerSettings(buffer) {
         try {
-            const json = new TextDecoder().decode(payload);
+            const view = new DataView(buffer);
+            // Offset 26: uint32 JSON string length
+            const jsonLen = view.getUint32(26, true);
+            // Offset 30: JSON string bytes
+            const jsonBytes = new Uint8Array(buffer, 30, jsonLen);
+            const json = new TextDecoder().decode(jsonBytes);
             const settings = JSON.parse(json);
             if (settings.bufferMs !== undefined) {
                 this._bufferMs = settings.bufferMs;
@@ -243,7 +245,7 @@ class SnapClient {
             }
             console.log('[SnapClient] Server settings:', settings);
         } catch (e) {
-            // ignore parse errors
+            console.warn('[SnapClient] Failed to parse server settings:', e);
         }
     }
 
@@ -266,33 +268,8 @@ class SnapClient {
 
     // --- Send messages ---
 
-    _buildMessage(type, payload) {
-        const payloadBytes = (typeof payload === 'string')
-            ? new TextEncoder().encode(payload)
-            : payload;
-        const size = payloadBytes.byteLength;
-        const buf = new ArrayBuffer(HEADER_SIZE + size);
-        const view = new DataView(buf);
-
-        const now = Date.now() / 1000;
-        const sec = Math.floor(now);
-        const usec = Math.floor((now - sec) * 1e6);
-
-        view.setUint16(0, type, true);          // type
-        view.setUint16(2, ++this._msgId, true); // id
-        view.setUint16(4, 0, true);             // refersTo
-        view.setInt32(6, sec, true);            // sent.sec
-        view.setInt32(10, usec, true);          // sent.usec
-        view.setInt32(14, 0, true);             // received.sec
-        view.setInt32(18, 0, true);             // received.usec
-        view.setUint32(22, size, true);         // size
-
-        new Uint8Array(buf, HEADER_SIZE).set(new Uint8Array(payloadBytes.buffer || payloadBytes));
-        return buf;
-    }
-
     _sendHello() {
-        const hello = JSON.stringify({
+        const jsonStr = JSON.stringify({
             MAC: this._id,
             HostName: 'Browser',
             Version: '0.27.0',
@@ -303,8 +280,33 @@ class SnapClient {
             ID: this._id,
             SnapStreamProtocolVersion: 2,
         });
-        const msg = this._buildMessage(MSG_HELLO, hello);
-        this._ws.send(msg);
+        const encoded = new TextEncoder().encode(jsonStr);
+
+        // Hello payload = uint32 length prefix + JSON bytes
+        const payloadSize = 4 + encoded.length;
+        const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
+        const view = new DataView(buf);
+
+        const now = Date.now() / 1000;
+        const sec = Math.floor(now);
+        const usec = Math.floor((now - sec) * 1e6);
+
+        // Header
+        view.setUint16(0, MSG_HELLO, true);
+        view.setUint16(2, ++this._msgId, true);
+        view.setUint16(4, 0, true);
+        view.setInt32(6, sec, true);
+        view.setInt32(10, usec, true);
+        view.setInt32(14, 0, true);
+        view.setInt32(18, 0, true);
+        view.setUint32(22, payloadSize, true);
+
+        // Payload: uint32 json length + json bytes
+        view.setUint32(26, encoded.length, true);
+        new Uint8Array(buf, 30).set(encoded);
+
+        this._ws.send(buf);
+        console.log('[SnapClient] Sent Hello, ID:', this._id);
     }
 
     _sendTimeResponse(serverSec, serverUsec) {
@@ -317,16 +319,17 @@ class SnapClient {
         const sec = Math.floor(now);
         const usec = Math.floor((now - sec) * 1e6);
 
-        view.setUint16(0, MSG_TIME, true);      // type
-        view.setUint16(2, ++this._msgId, true); // id
-        view.setUint16(4, 0, true);             // refersTo
+        // Header
+        view.setUint16(0, MSG_TIME, true);
+        view.setUint16(2, ++this._msgId, true);
+        view.setUint16(4, 0, true);
         view.setInt32(6, sec, true);            // sent.sec (client send time)
         view.setInt32(10, usec, true);          // sent.usec
         view.setInt32(14, serverSec, true);     // received.sec (server's sent time)
         view.setInt32(18, serverUsec, true);    // received.usec
-        view.setUint32(22, 8, true);            // size (8 bytes payload)
+        view.setUint32(22, 8, true);            // payload size
 
-        // Payload: latency placeholder (zeros)
+        // Payload: latency (zeros)
         view.setInt32(26, 0, true);
         view.setInt32(30, 0, true);
 
@@ -338,7 +341,6 @@ class SnapClient {
     _startTimeSync() {
         this._timeSyncInterval = setInterval(() => {
             if (this._ws && this._ws.readyState === WebSocket.OPEN) {
-                // Send empty time request
                 const buf = new ArrayBuffer(HEADER_SIZE + 8);
                 const view = new DataView(buf);
                 const now = Date.now() / 1000;
