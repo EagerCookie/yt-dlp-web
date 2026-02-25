@@ -31,7 +31,6 @@ class SnapClient {
         this._serverTimeDiff = 0;  // server_time - client_time (seconds)
         this._timeOffsets = [];    // for median calculation
         this._bufferMs = 1000;     // server buffer setting
-        this._playTime = 0;       // next scheduled play time
         this._id = this._generateId();
         this._onStateChange = null; // callback(connected: bool)
     }
@@ -89,7 +88,6 @@ class SnapClient {
         }
         this._connected = false;
         this._playing = false;
-        this._playTime = 0;
         this._timeOffsets = [];
         this._notify();
     }
@@ -125,6 +123,21 @@ class SnapClient {
         if (this._ctx.state === 'suspended') {
             this._ctx.resume();
         }
+        // Capture AudioContext creation wall-clock for time mapping
+        this._ctxCreateTime = Date.now() / 1000;
+    }
+
+    /** Convert server timestamp (seconds) to AudioContext time */
+    _serverToCtxTime(serverTimeSec) {
+        // serverTimeSec is in server clock domain
+        // _serverTimeDiff = serverClock - wallClock (seconds)
+        // So local wall time = serverTimeSec - _serverTimeDiff
+        // AudioContext time = wallClock - _ctxCreateTime (approx, plus ctx.currentTime drift)
+        // More accurately: ctx.currentTime corresponds to Date.now()/1000 right now
+        const nowWall = Date.now() / 1000;
+        const nowCtx = this._ctx.currentTime;
+        const localWallTime = serverTimeSec - this._serverTimeDiff;
+        return nowCtx + (localWallTime - nowWall);
     }
 
     // --- Binary protocol ---
@@ -175,8 +188,12 @@ class SnapClient {
             this._initAudio();
         }
 
-        // Offset 26: timestamp sec (int32)
-        // Offset 30: timestamp usec (int32)
+        const view = new DataView(buffer);
+        // Chunk timestamp from server (when this audio should play)
+        const chunkSec = view.getInt32(26, true);
+        const chunkUsec = view.getInt32(30, true);
+        const chunkServerTime = chunkSec + chunkUsec / 1e6;
+
         // Offset 34: payload size (uint32)
         // Offset 38+: raw PCM data
         const pcmData = new Int16Array(buffer.slice(38));
@@ -195,18 +212,29 @@ class SnapClient {
             }
         }
 
+        // Calculate target play time using server timestamp + time sync + buffer
+        // bufferMs is the server-configured delay for synchronization
+        const targetCtxTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000;
+
+        // Account for audio output latency
+        const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
+        const scheduledTime = targetCtxTime - outputLatency;
+
+        const now = this._ctx.currentTime;
+
+        // Drop chunks that are too old (more than 50ms in the past)
+        if (scheduledTime < now - 0.05) {
+            return;
+        }
+
         // Schedule playback
         const source = this._ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this._gainNode);
 
-        const now = this._ctx.currentTime;
-        if (this._playTime <= now) {
-            this._playTime = now + 0.05;
-        }
-
-        source.start(this._playTime);
-        this._playTime += audioBuffer.duration;
+        // If slightly in the past but within tolerance, play immediately
+        const playAt = Math.max(scheduledTime, now + 0.002);
+        source.start(playAt);
 
         if (!this._playing) {
             this._playing = true;
@@ -237,13 +265,19 @@ class SnapClient {
     }
 
     _handleTime(sentSec, sentUsec) {
-        const now = Date.now() / 1000;
-        const serverTime = sentSec + sentUsec / 1e6;
-        const offset = serverTime - now;
+        // NTP-style time sync
+        // Server sent its time at (sentSec, sentUsec)
+        // We received it now — calculate offset
+        const nowMs = Date.now();
+        const serverTimeMs = sentSec * 1000 + sentUsec / 1000;
+
+        // Simple offset: server_time - local_time (in seconds)
+        const offset = (serverTimeMs - nowMs) / 1000;
         this._timeOffsets.push(offset);
-        if (this._timeOffsets.length > 60) {
+        if (this._timeOffsets.length > 100) {
             this._timeOffsets.shift();
         }
+        // Use median for stability
         const sorted = [...this._timeOffsets].sort((a, b) => a - b);
         this._serverTimeDiff = sorted[Math.floor(sorted.length / 2)];
 
