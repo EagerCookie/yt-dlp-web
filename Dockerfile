@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install snapweb (browser-based SnapCast client)
-RUN curl -fsSL -L https://github.com/snapcast/snapweb/releases/download/v0.8.0/snapweb.zip -o /tmp/snapweb.zip \
+RUN curl -fsSL -L https://github.com/snapcast/snapweb/releases/download/v0.9.3/snapweb.zip -o /tmp/snapweb.zip \
     && mkdir -p /usr/share/snapserver/snapweb \
     && unzip /tmp/snapweb.zip -d /usr/share/snapserver/snapweb \
     && rm /tmp/snapweb.zip
