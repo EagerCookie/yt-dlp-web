@@ -251,85 +251,35 @@ class SnapClient {
 
         if (numFrames === 0) return;
 
+        // Audio data — always untouched, no sample manipulation
+        const audioBuffer = this._ctx.createBuffer(this._channels, numFrames, this._sampleRate);
+        for (let ch = 0; ch < this._channels; ch++) {
+            const channelData = audioBuffer.getChannelData(ch);
+            for (let i = 0; i < numFrames; i++) {
+                channelData[i] = pcmData[i * this._channels + ch] / 32768.0;
+            }
+        }
+
         const now = this._ctx.currentTime;
         const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
         const idealTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000 - outputLatency;
 
         if (this._nextPlayTime <= now) {
-            // First chunk or fallen behind — sync to server timestamp
+            // First chunk or fallen behind — hard sync to server timestamp
             this._nextPlayTime = Math.max(idealTime, now + 0.01);
-        }
-
-        // drift > 0: we're playing too late (behind), need to speed up (drop frames)
-        // drift < 0: we're playing too early (ahead), need to slow down (add frames)
-        const drift = this._nextPlayTime - idealTime;
-        const absDrift = Math.abs(drift);
-
-        let outFrames = numFrames;
-        let adjustFrames = 0;
-
-        if (absDrift > 0.05) {
-            // Hard resync > 50ms — reset playback timeline
-            this._nextPlayTime = Math.max(idealTime, now + 0.01);
-        } else if (absDrift > 0.001) {
-            // Soft sync 1-50ms: calculate frames to add/remove
-            // Clamp adjustment to max ~2ms per chunk to keep it inaudible
-            const maxAdjust = Math.ceil(this._sampleRate * 0.002);
-            adjustFrames = Math.round(drift * this._sampleRate);
-            adjustFrames = Math.max(-maxAdjust, Math.min(maxAdjust, adjustFrames));
-            outFrames = numFrames - adjustFrames; // drop frames → fewer out; add frames → more out
-            if (outFrames < 1) outFrames = numFrames; // safety
-        }
-
-        const audioBuffer = this._ctx.createBuffer(this._channels, outFrames, this._sampleRate);
-
-        if (adjustFrames === 0) {
-            // No adjustment — direct copy
-            for (let ch = 0; ch < this._channels; ch++) {
-                const channelData = audioBuffer.getChannelData(ch);
-                for (let i = 0; i < numFrames; i++) {
-                    channelData[i] = pcmData[i * this._channels + ch] / 32768.0;
-                }
-            }
-        } else if (adjustFrames > 0) {
-            // Drift positive: we're behind → drop frames to speed up
-            // Evenly distribute dropped frames across the chunk
-            const dropCount = adjustFrames;
-            const everyN = Math.floor(numFrames / (dropCount + 1));
-            for (let ch = 0; ch < this._channels; ch++) {
-                const channelData = audioBuffer.getChannelData(ch);
-                let outIdx = 0;
-                let dropped = 0;
-                for (let i = 0; i < numFrames && outIdx < outFrames; i++) {
-                    if (dropped < dropCount && everyN > 0 && i > 0 && (i % everyN) === 0) {
-                        dropped++; // skip this frame
-                        continue;
-                    }
-                    channelData[outIdx++] = pcmData[i * this._channels + ch] / 32768.0;
-                }
-                // Fill remainder if any
-                while (outIdx < outFrames) {
-                    channelData[outIdx] = channelData[outIdx - 1] || 0;
-                    outIdx++;
-                }
-            }
         } else {
-            // Drift negative: we're ahead → duplicate frames to slow down
-            const dupCount = -adjustFrames;
-            const everyN = Math.floor(numFrames / (dupCount + 1));
-            for (let ch = 0; ch < this._channels; ch++) {
-                const channelData = audioBuffer.getChannelData(ch);
-                let outIdx = 0;
-                let duped = 0;
-                for (let i = 0; i < numFrames && outIdx < outFrames; i++) {
-                    channelData[outIdx++] = pcmData[i * this._channels + ch] / 32768.0;
-                    if (duped < dupCount && everyN > 0 && i > 0 && (i % everyN) === 0 && outIdx < outFrames) {
-                        // Duplicate this frame
-                        channelData[outIdx++] = pcmData[i * this._channels + ch] / 32768.0;
-                        duped++;
-                    }
-                }
+            const drift = this._nextPlayTime - idealTime;
+            const absDrift = Math.abs(drift);
+
+            if (absDrift > 0.05) {
+                // Hard resync > 50ms
+                this._nextPlayTime = Math.max(idealTime, now + 0.01);
+            } else if (absDrift > 0.005) {
+                // Soft sync 5-50ms: nudge _nextPlayTime toward ideal
+                // Move 10% of drift per chunk — smooth convergence, no audio artifacts
+                this._nextPlayTime -= drift * 0.1;
             }
+            // < 5ms: no correction needed, within acceptable range
         }
 
         const source = this._ctx.createBufferSource();
