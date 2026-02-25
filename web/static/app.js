@@ -890,6 +890,10 @@ function renderHistory(items, append) {
             ? `<a class="download-link" href="/files/${encodeURIComponent(item.file_name)}">Download</a>`
             : '';
 
+        const playBtn = item.file_name && item.status === 'done'
+            ? `<button class="play-single-btn" onclick="playSingleFile(${escHtml(JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}))})" title="Play">&#9654;</button>`
+            : '';
+
         const statusClass = item.status === 'done' ? 'color: var(--success)'
             : item.status === 'error' ? 'color: var(--error)'
             : '';
@@ -923,6 +927,7 @@ function renderHistory(items, append) {
             <span class="h-size">${item.file_size ? formatBytes(item.file_size) : ''}</span>
             <span style="${statusClass}; font-size:12px; width:60px; text-align:center">${item.status}</span>
             <span class="h-actions">
+                ${playBtn}
                 <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${pinTitle}">&#9733;</button>
                 ${downloadBtn}
                 <button class="delete-btn" onclick="deleteJob('${item.id}')">Delete</button>
@@ -1055,6 +1060,7 @@ function renderLibrary(append, newItems) {
                 <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${item.pinned ? 'Unpin' : 'Pin'}">&#9733;</button>
             </span>
             <span class="lib-actions">
+                <button class="play-single-btn" onclick="playSingleFile(${escHtml(JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}))})" title="Play">&#9654;</button>
                 ${downloadBtn}
                 <button class="delete-btn" onclick="deleteJob('${item.id}')" style="border-color:var(--error);color:var(--error)">Del</button>
             </span>
@@ -1847,6 +1853,15 @@ function playTrack(index) {
     highlightCurrentTrack();
 }
 
+function playSingleFile(item) {
+    state.player.playlistId = null;
+    state.player.items = [item];
+    state.player.currentIndex = 0;
+    state.player.shuffle = false;
+    $('shuffle-btn').classList.remove('active');
+    playTrack(0);
+}
+
 function updatePlayerUI() {
     const item = state.player.items[state.player.currentIndex];
     if (!item) return;
@@ -2190,7 +2205,14 @@ async function loadVersion() {
         const resp = await fetch('/api/version');
         if (resp.ok) {
             const data = await resp.json();
-            $('version-info').textContent = `yt-dlp ${data.yt_dlp_version}`;
+            let text = `yt-dlp ${data.yt_dlp_version}`;
+            if (data.latest_version) {
+                text += ` (update available: ${data.latest_version})`;
+                $('version-info').classList.add('version-update');
+            } else {
+                $('version-info').classList.remove('version-update');
+            }
+            $('version-info').textContent = text;
         }
     } catch (e) {
         console.error('Failed to load version', e);
@@ -2216,4 +2238,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Start sidebar collapsed
     $('sidebar').classList.add('collapsed');
+
+    // Periodically refresh version (every 30 min)
+    setInterval(loadVersion, 30 * 60 * 1000);
 });

@@ -340,7 +340,44 @@ async def playlists_page():
 @app.get('/api/version')
 async def get_version():
     import yt_dlp.version
-    return {'yt_dlp_version': yt_dlp.version.__version__}
+    current = yt_dlp.version.__version__
+    latest = await _get_latest_ytdlp_version()
+    result = {'yt_dlp_version': current}
+    if latest and latest != current:
+        result['latest_version'] = latest
+    return result
+
+
+_latest_version_cache: dict = {'version': None, 'checked_at': 0}
+
+
+def _fetch_latest_ytdlp_version_sync() -> str | None:
+    """Check PyPI for the latest yt-dlp version (blocking, run in executor)."""
+    import json
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            'https://pypi.org/pypi/yt-dlp/json',
+            headers={'Accept': 'application/json'},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            return data.get('info', {}).get('version')
+    except Exception:
+        return None
+
+
+async def _get_latest_ytdlp_version() -> str | None:
+    """Check PyPI for the latest yt-dlp version (cached for 1 hour)."""
+    now = time.time()
+    if _latest_version_cache['version'] and now - _latest_version_cache['checked_at'] < 3600:
+        return _latest_version_cache['version']
+    loop = asyncio.get_event_loop()
+    ver = await loop.run_in_executor(None, _fetch_latest_ytdlp_version_sync)
+    if ver:
+        _latest_version_cache['version'] = ver
+        _latest_version_cache['checked_at'] = now
+    return _latest_version_cache['version']
 
 
 _extractors_cache: list[dict] | None = None

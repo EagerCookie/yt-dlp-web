@@ -57,6 +57,9 @@
 ## Improvements
 - [x] Library: add filter for unpinned files
 - [x] Auto-tagging: verified — Audio/Video system tags assigned automatically on download completion
+- [x] Fix: player bar visible on initial page load (should be hidden until playlist playback starts)
+- [x] Play single file from Library/History list (without creating a playlist)
+- [x] Auto-update yt-dlp version display (check PyPI, show update indicator)
 
 ## Synchronized Playback
 - [ ] Branch `sync-snapcast`: SnapCast integration

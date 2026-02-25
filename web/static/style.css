@@ -294,6 +294,10 @@ header h1 {
     margin-top: 4px;
 }
 
+.version-update {
+    color: var(--warning);
+}
+
 /* ===== Cards ===== */
 
 .card {
@@ -693,6 +697,22 @@ header h1 {
 
 .pin-btn:hover { color: var(--warning); }
 .pin-btn.pinned { color: var(--warning); }
+
+.play-single-btn {
+    background: none;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    line-height: 1;
+    transition: background 0.2s, color 0.2s;
+}
+.play-single-btn:hover {
+    background: var(--accent);
+    color: #fff;
+}
 
 .history-item-pinned {
     border-left: 3px solid var(--warning);
@@ -1598,6 +1618,10 @@ body.radio-active:not(.player-active) .radio-bar {
     padding: 8px 20px;
     z-index: 150;
     height: 64px;
+}
+
+.player-bar[hidden] {
+    display: none !important;
 }
 
 .player-controls {
