@@ -259,13 +259,23 @@
             </div>
             <div class="radio-queue" id="radio-queue"></div>
 
-            <!-- SnapCast: embedded snapweb player -->
-            <div id="snapweb-section" class="snapweb-section" hidden>
+            <!-- SnapCast: native sync player -->
+            <div id="sync-section" class="sync-section" hidden>
                 <div class="radio-panel-header">
                     <span>Sync Player</span>
-                    <button class="snapweb-close-btn" onclick="toggleSnapwebPanel()" title="Close">&times;</button>
+                    <button class="sync-close-btn" onclick="toggleSyncPanel()" title="Close">&times;</button>
                 </div>
-                <iframe id="snapweb-iframe" class="snapweb-iframe" allow="autoplay"></iframe>
+                <div class="sync-body">
+                    <div class="sync-local">
+                        <div class="sync-status" id="sync-status">Disconnected</div>
+                        <div class="sync-local-controls">
+                            <button class="btn-sm sync-connect-btn" id="sync-connect-btn" onclick="toggleSyncConnect()">Connect</button>
+                            <input type="range" class="volume-slider sync-volume" id="sync-volume" min="0" max="100" value="80" step="1"
+                                   oninput="setSyncVolume(this.value)" title="Local volume">
+                        </div>
+                    </div>
+                    <div class="sync-clients" id="sync-clients"></div>
+                </div>
             </div>
         </div>
     </div>
@@ -352,6 +362,7 @@
         </div>
     </div>
 
+    <script src="/static/snapclient.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

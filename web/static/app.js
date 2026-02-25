@@ -2195,13 +2195,14 @@ function updateRadioUI() {
     } else {
         bar.hidden = true;
         document.body.classList.remove('radio-active');
-        // Close snapweb iframe if open
-        if (_snapwebOpen) {
-            _snapwebOpen = false;
-            const section = $('snapweb-section');
-            const iframe = $('snapweb-iframe');
+        // Close sync panel and disconnect client if open
+        if (_syncPanelOpen) {
+            _syncPanelOpen = false;
+            const section = $('sync-section');
             if (section) section.hidden = true;
-            if (iframe) iframe.src = 'about:blank';
+        }
+        if (_snapClient && _snapClient.connected) {
+            _snapClient.disconnect();
         }
     }
 }
@@ -2361,51 +2362,96 @@ function copyRadioUrl() {
     }).catch(() => {});
 }
 
-// --- SnapCast: Sync Clients ---
+// --- SnapCast: Native Sync Client ---
 
 state.snapcast = {
     enabled: false,
     clients: [],
 };
 
-let _snapwebOpen = false;
+let _syncPanelOpen = false;
+let _snapClient = null;
 
-function openSnapcastPlayer() {
-    toggleSnapwebPanel();
+function _getSnapClient() {
+    if (!_snapClient) {
+        _snapClient = new SnapClient();
+        _snapClient.onStateChange = () => {
+            updateSyncUI();
+            // Refresh client list when connection state changes
+            loadSnapcastStatus();
+        };
+    }
+    return _snapClient;
 }
 
-function toggleSnapwebPanel() {
-    _snapwebOpen = !_snapwebOpen;
-    const section = $('snapweb-section');
-    const iframe = $('snapweb-iframe');
-    if (!section || !iframe) return;
+function openSnapcastPlayer() {
+    toggleSyncPanel();
+}
 
-    if (_snapwebOpen) {
+function toggleSyncPanel() {
+    _syncPanelOpen = !_syncPanelOpen;
+    const section = $('sync-section');
+    if (!section) return;
+
+    if (_syncPanelOpen) {
         // Ensure radio panel is open
         if (!state.radio.panelOpen) {
             state.radio.panelOpen = true;
             $('radio-panel').hidden = false;
             loadRadioQueue();
         }
-        const url = `http://${location.hostname}:1780`;
-        if (!iframe.src || iframe.src === 'about:blank' || !iframe.src.includes(':1780')) {
-            iframe.src = url;
-        }
         section.hidden = false;
+        loadSnapcastStatus();
     } else {
         section.hidden = true;
-        // Stop audio by clearing iframe src
-        iframe.src = 'about:blank';
     }
     updateSyncBtnState();
 }
 
+function toggleSyncConnect() {
+    const client = _getSnapClient();
+    if (client.connected) {
+        client.disconnect();
+    } else {
+        client.connect(location.hostname, 1704);
+    }
+    updateSyncUI();
+}
+
+function setSyncVolume(value) {
+    const client = _getSnapClient();
+    client.setVolume(parseInt(value));
+}
+
+function updateSyncUI() {
+    const client = _getSnapClient();
+    const statusEl = $('sync-status');
+    const btnEl = $('sync-connect-btn');
+    if (statusEl) {
+        if (client.connected && client.playing) {
+            statusEl.textContent = 'Playing';
+            statusEl.className = 'sync-status sync-status-playing';
+        } else if (client.connected) {
+            statusEl.textContent = 'Connected';
+            statusEl.className = 'sync-status sync-status-connected';
+        } else {
+            statusEl.textContent = 'Disconnected';
+            statusEl.className = 'sync-status';
+        }
+    }
+    if (btnEl) {
+        btnEl.textContent = client.connected ? 'Disconnect' : 'Connect';
+        btnEl.classList.toggle('active', client.connected);
+    }
+}
+
 function updateSyncBtnState() {
     const btn = $('radio-sync-btn');
-    if (btn) {
-        btn.classList.toggle('active', _snapwebOpen);
-        btn.title = _snapwebOpen ? 'Close sync player' : 'Open sync player';
-    }
+    if (!btn) return;
+    const client = _snapClient;
+    const isConnected = client && client.connected;
+    btn.classList.toggle('active', isConnected || _syncPanelOpen);
+    btn.title = _syncPanelOpen ? 'Close sync panel' : 'Open sync panel';
 }
 
 function updateSnapcastCounter() {
@@ -2428,8 +2474,55 @@ async function loadSnapcastStatus() {
         state.snapcast.enabled = data.enabled;
         state.snapcast.clients = data.clients || [];
         updateSnapcastCounter();
+        renderSyncClients();
     } catch (e) {
         console.error('Failed to load SnapCast status', e);
+    }
+}
+
+function renderSyncClients() {
+    const container = $('sync-clients');
+    if (!container) return;
+    const clients = state.snapcast.clients;
+    if (clients.length === 0) {
+        container.innerHTML = '<p class="muted" style="padding:4px 0;font-size:11px">No clients connected</p>';
+        return;
+    }
+    container.innerHTML = clients.map(c => {
+        const statusDot = c.connected ? 'sync-client-online' : 'sync-client-offline';
+        const muteIcon = c.muted ? '&#128263;' : '&#128266;';
+        return `<div class="sync-client">
+            <span class="sync-client-dot ${statusDot}"></span>
+            <span class="sync-client-name">${escHtml(c.name)}</span>
+            <input type="range" class="volume-slider sync-client-vol" min="0" max="100" value="${c.volume}" step="1"
+                   onchange="setSnapClientVolume('${escHtml(c.id)}', this.value)" title="Volume: ${c.volume}%">
+            <button class="sync-mute-btn${c.muted ? ' muted' : ''}" onclick="toggleSnapClientMute('${escHtml(c.id)}', ${!c.muted})" title="${c.muted ? 'Unmute' : 'Mute'}">${muteIcon}</button>
+        </div>`;
+    }).join('');
+}
+
+async function setSnapClientVolume(clientId, volume) {
+    try {
+        await fetch('/api/snapcast/volume', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, volume: parseInt(volume) }),
+        });
+    } catch (e) {
+        console.error('Failed to set SnapCast volume', e);
+    }
+}
+
+async function toggleSnapClientMute(clientId, muted) {
+    try {
+        await fetch('/api/snapcast/mute', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: clientId, muted }),
+        });
+        loadSnapcastStatus();
+    } catch (e) {
+        console.error('Failed to toggle SnapCast mute', e);
     }
 }
 
