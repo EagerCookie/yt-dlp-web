@@ -259,15 +259,13 @@
             </div>
             <div class="radio-queue" id="radio-queue"></div>
 
-            <!-- SnapCast sync clients -->
-            <div id="snapcast-section" class="radio-sync-section" hidden>
+            <!-- SnapCast: embedded snapweb player -->
+            <div id="snapweb-section" class="snapweb-section" hidden>
                 <div class="radio-panel-header">
-                    <span>Sync Clients</span>
-                    <a href="" id="snapweb-link" target="_blank" class="snapweb-link" title="Open snapweb to connect new clients">snapweb</a>
+                    <span>Sync Player</span>
+                    <button class="snapweb-close-btn" onclick="toggleSnapwebPanel()" title="Close">&times;</button>
                 </div>
-                <div id="snapcast-clients" class="snapcast-clients">
-                    <span class="muted">No clients connected</span>
-                </div>
+                <iframe id="snapweb-iframe" class="snapweb-iframe" allow="autoplay"></iframe>
             </div>
         </div>
     </div>

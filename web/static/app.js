@@ -2195,6 +2195,14 @@ function updateRadioUI() {
     } else {
         bar.hidden = true;
         document.body.classList.remove('radio-active');
+        // Close snapweb iframe if open
+        if (_snapwebOpen) {
+            _snapwebOpen = false;
+            const section = $('snapweb-section');
+            const iframe = $('snapweb-iframe');
+            if (section) section.hidden = true;
+            if (iframe) iframe.src = 'about:blank';
+        }
     }
 }
 
@@ -2360,36 +2368,43 @@ state.snapcast = {
     clients: [],
 };
 
-let _snapcastPopup = null;
-let _snapcastPopupCheck = null;
+let _snapwebOpen = false;
 
 function openSnapcastPlayer() {
-    const url = `http://${location.hostname}:1780`;
-    // If popup already open and not closed, focus it
-    if (_snapcastPopup && !_snapcastPopup.closed) {
-        _snapcastPopup.focus();
-        return;
-    }
-    _snapcastPopup = window.open(url, 'snapweb', 'width=420,height=320,resizable=yes');
-    updateSyncBtnState();
-    // Poll to detect when popup is closed
-    if (_snapcastPopupCheck) clearInterval(_snapcastPopupCheck);
-    _snapcastPopupCheck = setInterval(() => {
-        if (_snapcastPopup && _snapcastPopup.closed) {
-            _snapcastPopup = null;
-            clearInterval(_snapcastPopupCheck);
-            _snapcastPopupCheck = null;
-            updateSyncBtnState();
+    toggleSnapwebPanel();
+}
+
+function toggleSnapwebPanel() {
+    _snapwebOpen = !_snapwebOpen;
+    const section = $('snapweb-section');
+    const iframe = $('snapweb-iframe');
+    if (!section || !iframe) return;
+
+    if (_snapwebOpen) {
+        // Ensure radio panel is open
+        if (!state.radio.panelOpen) {
+            state.radio.panelOpen = true;
+            $('radio-panel').hidden = false;
+            loadRadioQueue();
         }
-    }, 1000);
+        const url = `http://${location.hostname}:1780`;
+        if (!iframe.src || iframe.src === 'about:blank' || !iframe.src.includes(':1780')) {
+            iframe.src = url;
+        }
+        section.hidden = false;
+    } else {
+        section.hidden = true;
+        // Stop audio by clearing iframe src
+        iframe.src = 'about:blank';
+    }
+    updateSyncBtnState();
 }
 
 function updateSyncBtnState() {
     const btn = $('radio-sync-btn');
     if (btn) {
-        const isOpen = _snapcastPopup && !_snapcastPopup.closed;
-        btn.classList.toggle('active', isOpen);
-        btn.title = isOpen ? 'Sync player open' : 'Open sync player';
+        btn.classList.toggle('active', _snapwebOpen);
+        btn.title = _snapwebOpen ? 'Close sync player' : 'Open sync player';
     }
 }
 
@@ -2413,79 +2428,11 @@ async function loadSnapcastStatus() {
         state.snapcast.enabled = data.enabled;
         state.snapcast.clients = data.clients || [];
         updateSnapcastCounter();
-        renderSnapcastClients();
     } catch (e) {
         console.error('Failed to load SnapCast status', e);
     }
 }
 
-function renderSnapcastClients() {
-    const section = $('snapcast-section');
-    if (!section) return;
-
-    if (!state.snapcast.enabled) {
-        section.hidden = true;
-        return;
-    }
-    section.hidden = false;
-
-    // Set snapweb link
-    const link = $('snapweb-link');
-    if (link) {
-        link.href = `http://${location.hostname}:1780`;
-    }
-
-    const container = $('snapcast-clients');
-    if (!container) return;
-
-    const clients = state.snapcast.clients;
-    if (clients.length === 0) {
-        container.innerHTML = '<span class="muted" style="padding:8px 12px;display:block;font-size:12px">No clients connected. Open snapweb to add one.</span>';
-        return;
-    }
-
-    container.innerHTML = clients.map(c => {
-        const dotClass = c.connected ? 'connected' : 'disconnected';
-        const muteClass = c.muted ? ' muted' : '';
-        const muteIcon = c.muted ? '&#128263;' : '&#128266;';
-        return `<div class="snapcast-client">
-            <span class="snapcast-client-dot ${dotClass}"></span>
-            <span class="snapcast-client-name">${escHtml(c.name)}</span>
-            <div class="snapcast-client-volume">
-                <input type="range" class="snapcast-volume-slider" min="0" max="100" value="${c.volume}"
-                    onchange="setSnapcastVolume('${escHtml(c.id)}', parseInt(this.value))">
-            </div>
-            <button class="snapcast-mute-btn${muteClass}" onclick="toggleSnapcastMute('${escHtml(c.id)}', ${!c.muted})"
-                title="${c.muted ? 'Unmute' : 'Mute'}">${muteIcon}</button>
-        </div>`;
-    }).join('');
-}
-
-async function setSnapcastVolume(clientId, volume) {
-    try {
-        await fetch('/api/snapcast/volume', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: clientId, volume }),
-        });
-    } catch (e) {
-        console.error('Failed to set SnapCast volume', e);
-    }
-}
-
-async function toggleSnapcastMute(clientId, muted) {
-    try {
-        await fetch('/api/snapcast/mute', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: clientId, muted }),
-        });
-        // Refresh status after toggle
-        setTimeout(loadSnapcastStatus, 300);
-    } catch (e) {
-        console.error('Failed to toggle SnapCast mute', e);
-    }
-}
 
 // ===== Init =====
 
