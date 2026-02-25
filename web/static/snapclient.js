@@ -31,6 +31,7 @@ class SnapClient {
         this._serverTimeDiff = 0;  // server_time - client_time (seconds)
         this._timeOffsets = [];    // for median calculation
         this._bufferMs = 1000;     // server buffer setting
+        this._nextPlayTime = 0;    // next gapless play time on AudioContext timeline
         this._id = this._generateId();
         this._onStateChange = null; // callback(connected: bool)
     }
@@ -89,6 +90,7 @@ class SnapClient {
         this._connected = false;
         this._playing = false;
         this._timeOffsets = [];
+        this._nextPlayTime = 0;
         this._notify();
     }
 
@@ -212,29 +214,34 @@ class SnapClient {
             }
         }
 
-        // Calculate target play time using server timestamp + time sync + buffer
-        // bufferMs is the server-configured delay for synchronization
-        const targetCtxTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000;
-
-        // Account for audio output latency
-        const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
-        const scheduledTime = targetCtxTime - outputLatency;
-
         const now = this._ctx.currentTime;
 
-        // Drop chunks that are too old (more than 50ms in the past)
-        if (scheduledTime < now - 0.05) {
-            return;
+        // Calculate ideal play time from server timestamp for sync reference
+        const outputLatency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
+        const idealTime = this._serverToCtxTime(chunkServerTime) + this._bufferMs / 1000 - outputLatency;
+
+        if (this._nextPlayTime <= now) {
+            // First chunk or fallen behind — use server timestamp to establish sync point
+            // This is the initial delay that allows synchronization with other clients
+            this._nextPlayTime = Math.max(idealTime, now + 0.01);
+        } else {
+            // Check drift between sequential scheduling and server timestamps
+            const drift = this._nextPlayTime - idealTime;
+            if (Math.abs(drift) > 0.1) {
+                // Drift > 100ms — hard resync to server timestamp
+                this._nextPlayTime = Math.max(idealTime, now + 0.01);
+            }
+            // Otherwise keep gapless sequential scheduling (no crackling)
         }
 
-        // Schedule playback
+        // Schedule playback — gapless: each chunk starts exactly where previous ended
         const source = this._ctx.createBufferSource();
         source.buffer = audioBuffer;
         source.connect(this._gainNode);
+        source.start(this._nextPlayTime);
 
-        // If slightly in the past but within tolerance, play immediately
-        const playAt = Math.max(scheduledTime, now + 0.002);
-        source.start(playAt);
+        // Advance play time by exact buffer duration for gapless playback
+        this._nextPlayTime += audioBuffer.duration;
 
         if (!this._playing) {
             this._playing = true;
