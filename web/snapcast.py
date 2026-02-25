@@ -57,6 +57,17 @@ class SnapcastManager:
             # snapserver not reading or pipe full — skip silently
             pass
 
+    def flush_silence(self):
+        """Write silence to FIFO to clear leftover audio in snapserver buffer."""
+        if not self._enabled or self._fifo_fd is None:
+            return
+        # 0.5s of silence at 44100 Hz, 16-bit stereo = 44100 * 2 * 2 * 0.5 = 88200 bytes
+        silence = b'\x00' * 88200
+        try:
+            os.write(self._fifo_fd, silence)
+        except (BrokenPipeError, OSError):
+            pass
+
     # --- JSON-RPC proxy to snapserver (port 1705) ---
 
     async def _rpc_call(self, method: str, params: dict | None = None) -> dict:

@@ -24,6 +24,8 @@ class RadioEngine:
         self._running: bool = False
         self._task: asyncio.Task | None = None
         self._process: asyncio.subprocess.Process | None = None
+        self._snap_process: asyncio.subprocess.Process | None = None
+        self._snap_task: asyncio.Task | None = None
         self._skip_event: asyncio.Event = asyncio.Event()
         self._subscribers: list[asyncio.Queue] = []
         self._lock: asyncio.Lock = asyncio.Lock()
@@ -141,6 +143,12 @@ class RadioEngine:
     async def _stop_internal(self):
         self._running = False
         self._skip_event.set()
+        # Kill snapcast FFmpeg FIRST to stop writing to FIFO immediately
+        await self._stop_snap_process()
+        # Flush FIFO with silence so snapserver doesn't play leftover noise
+        if self._snapcast and self._snapcast.enabled:
+            self._snapcast.flush_silence()
+        # Kill main MP3 FFmpeg
         if self._process and self._process.returncode is None:
             try:
                 self._process.kill()
@@ -228,11 +236,9 @@ class RadioEngine:
             return
 
         # Start a second FFmpeg for SnapCast: PCM s16le → snapfifo
-        snap_proc = None
-        snap_task = None
         if self._snapcast and self._snapcast.enabled:
             try:
-                snap_proc = await asyncio.create_subprocess_exec(
+                self._snap_process = await asyncio.create_subprocess_exec(
                     'ffmpeg', '-hide_banner', '-loglevel', 'error',
                     '-re',
                     '-threads', '1',
@@ -244,8 +250,8 @@ class RadioEngine:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                snap_task = asyncio.create_task(
-                    self._pipe_pcm_to_snapcast(snap_proc))
+                self._snap_task = asyncio.create_task(
+                    self._pipe_pcm_to_snapcast(self._snap_process))
             except Exception as e:
                 log.warning('Radio: failed to start snapcast ffmpeg: %s', e)
 
@@ -271,18 +277,24 @@ class RadioEngine:
                     pass
             self._process = None
             # Clean up snapcast FFmpeg
-            if snap_task:
-                snap_task.cancel()
-                try:
-                    await snap_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if snap_proc and snap_proc.returncode is None:
-                try:
-                    snap_proc.kill()
-                    await snap_proc.wait()
-                except Exception:
-                    pass
+            await self._stop_snap_process()
+
+    async def _stop_snap_process(self):
+        """Kill the snapcast FFmpeg process and task if running."""
+        if self._snap_task and not self._snap_task.done():
+            self._snap_task.cancel()
+            try:
+                await self._snap_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._snap_task = None
+        if self._snap_process and self._snap_process.returncode is None:
+            try:
+                self._snap_process.kill()
+                await self._snap_process.wait()
+            except Exception:
+                pass
+        self._snap_process = None
 
     async def _pipe_pcm_to_snapcast(self, proc: asyncio.subprocess.Process):
         """Read PCM chunks from FFmpeg and write to snapfifo."""
