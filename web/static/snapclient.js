@@ -29,7 +29,7 @@ const MIN_TIME_SYNCS = 3;
 class TimeProvider {
     constructor() {
         this._ctx = null;
-        this._diffMedian = 0;
+        this._diffMedian = 0;  // server_time - wall_time (ms)
         this._diffs = [];
     }
 
@@ -37,27 +37,32 @@ class TimeProvider {
         this._ctx = ctx;
     }
 
-    /** Current local time in milliseconds (from AudioContext) */
+    /** Current wall-clock time in milliseconds (Date.now) */
     now() {
-        if (this._ctx) {
-            return this._ctx.currentTime * 1000;
-        }
-        return performance.now();
+        return Date.now();
     }
 
-    /** Current local time in seconds */
-    nowSec() {
-        return this.now() / 1000;
+    /** Convert wall-clock time (ms) to server time (ms) */
+    serverTime(wallMs) {
+        return wallMs + this._diffMedian;
     }
 
-    /** Convert local time (ms) to server time (ms) */
-    serverTime(localMs) {
-        return localMs + this._diffMedian;
-    }
-
-    /** Convert server time (ms) to local time (ms) */
-    localTime(serverMs) {
+    /** Convert server time (ms) to wall-clock time (ms) */
+    wallTime(serverMs) {
         return serverMs - this._diffMedian;
+    }
+
+    /** Convert wall-clock time (ms) to AudioContext time (seconds) */
+    wallToCtx(wallMs) {
+        if (!this._ctx) return 0;
+        const nowWall = Date.now();
+        const nowCtx = this._ctx.currentTime;
+        return nowCtx + (wallMs - nowWall) / 1000;
+    }
+
+    /** Convert server time (ms) to AudioContext time (seconds) */
+    serverToCtx(serverMs) {
+        return this.wallToCtx(this.wallTime(serverMs));
     }
 
     /** Update time diff from NTP-style measurement */
@@ -537,7 +542,8 @@ class SnapClient {
     _play() {
         if (!this._ctx || !this._stream || !this._timeProvider.ready) return;
 
-        this._playTime = this._timeProvider.nowSec() + 0.1;
+        // _playTime is in AudioContext seconds domain
+        this._playTime = this._ctx.currentTime + 0.1;
 
         for (let i = 0; i < AUDIO_BUFFER_COUNT; i++) {
             this._playNext();
@@ -556,8 +562,13 @@ class SnapClient {
             buffer = this._ctx.createBuffer(this._channels, this._bufferFrameCount, this._sampleRate);
         }
 
-        // Calculate the server-relative play time for sync
-        const playTimeMs = (this._playTime + this._latency) * 1000 - this._bufferMs;
+        // Convert playTime (ctx seconds) to wall-clock ms for sync calculation
+        // playTimeMs = wall-clock time when this buffer will actually be heard
+        const nowCtx = this._ctx.currentTime;
+        const nowWall = Date.now();
+        const playWallMs = nowWall + (this._playTime - nowCtx + this._latency) * 1000;
+        // Subtract bufferMs to get the server timestamp we should be playing
+        const playTimeMs = playWallMs - this._bufferMs;
 
         // Fill the buffer from audio stream
         this._stream.getNextBuffer(buffer, playTimeMs);
