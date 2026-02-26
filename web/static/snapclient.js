@@ -65,10 +65,9 @@ class TimeProvider {
         return this.wallToCtx(this.wallTime(serverMs));
     }
 
-    /** Update time diff from NTP-style measurement */
-    setDiff(c2sMs, s2cMs) {
-        const diff = (c2sMs - s2cMs) / 2;
-        this._diffs.push(diff);
+    /** Add a time offset sample (serverTime - clientTime, in ms) */
+    addOffset(offsetMs) {
+        this._diffs.push(offsetMs);
         if (this._diffs.length > 100) {
             this._diffs.shift();
         }
@@ -652,6 +651,12 @@ class SnapClient {
         const chunkUsec = view.getInt32(30, true);
         const chunkTimestampMs = chunkSec * 1000 + chunkUsec / 1000;
 
+        if (!this._chunkLogCount) this._chunkLogCount = 0;
+        if (this._chunkLogCount < 3) {
+            console.log(`[SnapClient] CHUNK: sec=${chunkSec} usec=${chunkUsec} timestampMs=${chunkTimestampMs.toFixed(0)} Date.now=${Date.now()}`);
+            this._chunkLogCount++;
+        }
+
         // Decode PCM s16le to Float32
         const pcmData = new Int16Array(buffer.slice(38));
         const numSamples = pcmData.length;
@@ -697,32 +702,19 @@ class SnapClient {
     }
 
     _handleTime(sentSec, sentUsec) {
-        // NTP-style time sync
-        // The header's sent fields contain the time the server sent this message
-        // Fields at offset 14,18 contain the server's receive time of our request
-        // We compute c2s and s2c from the round-trip
-
-        const nowMs = this._timeProvider.now();
+        // Time sync: compute offset = serverTime - clientTime
+        // sentSec/sentUsec = server's send timestamp (from header)
+        const nowMs = Date.now();
         const sentMs = sentSec * 1000 + sentUsec / 1000;
 
-        // c2s: how far client-to-server delay (approximated by server_sent - client_now)
-        // In the snapweb protocol, the TIME response contains:
-        //   header.sent = server send time
-        //   header.received = server receive time of our request
-        //   payload = latency (our original sent time)
-        // But since we already have sent time in the header, we use:
-        //   c2s = serverReceiveTime - clientSendTime (latency field)
-        //   s2c = clientReceiveTime - serverSendTime
+        // offset = serverTime - clientTime (positive = server ahead)
+        const offset = sentMs - nowMs;
 
-        const s2c = nowMs - sentMs;
-        // For c2s, use the received fields from the header if available
-        // In our protocol, received sec/usec at offset 14,18 were set by server
-        // But for simplicity and matching snapweb behavior:
-        // We treat c2s ≈ s2c for the initial implementation
-        // The key insight is: diff = (c2s - s2c) / 2 converges to the correct offset
-        const c2s = s2c; // Simplified — works because median filters out jitter
+        if (this._timeProvider.syncCount < 5) {
+            console.log(`[SnapClient] TIME: sentMs=${sentMs.toFixed(0)} nowMs=${nowMs.toFixed(0)} offset=${offset.toFixed(1)}ms`);
+        }
 
-        this._timeProvider.setDiff(c2s, s2c);
+        this._timeProvider.addOffset(offset);
 
         this._sendTimeResponse(sentSec, sentUsec);
 
