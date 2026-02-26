@@ -192,7 +192,6 @@ class AudioStream {
         }
 
         if (this._chunks.length === 0) {
-            // Silence — no data available
             for (let ch = 0; ch < this._channels; ch++) {
                 buffer.getChannelData(ch).fill(0);
             }
@@ -201,6 +200,13 @@ class AudioStream {
 
         const chunk = this._chunks[0];
         const age = serverPlayTimeMs - chunk.startMs();
+
+        // Diagnostic: log first few calls
+        if (!this._logCount) this._logCount = 0;
+        if (this._logCount < 5) {
+            console.log(`[AudioStream] DEBUG: playTimeMs=${playTimeMs.toFixed(0)} serverPlayTimeMs=${serverPlayTimeMs.toFixed(0)} chunk.startMs=${chunk.startMs().toFixed(0)} diff=${this._timeProvider.diffMs.toFixed(1)} age=${age.toFixed(1)}ms`);
+            this._logCount++;
+        }
 
         // Hard sync: age > 5ms — we're behind, skip samples
         if (age > 5) {
