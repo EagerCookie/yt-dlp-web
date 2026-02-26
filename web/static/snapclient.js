@@ -1,353 +1,567 @@
 /**
- * SnapCast browser client — connects to snapserver audio stream
- * via WebSocket binary protocol and plays PCM audio through Web Audio API.
+ * SnapCast browser client — direct port of snapweb's snapstream.ts to JavaScript.
+ * Source: https://github.com/badaix/snapweb/blob/master/src/snapstream.ts
  *
- * Architecture based on snapweb (https://github.com/badaix/snapweb):
- * - Pull-model playback with pre-filled rotating buffers
- * - NTP-style time synchronization
- * - Hard sync (>5ms) and soft sync (0.1-5ms)
- *
- * Only supports PCM s16le codec (snapserver must be configured with codec=pcm).
+ * Stripped: FlacDecoder, OpusDecoder, standardized-audio-context, React deps.
+ * Added: SnapClient wrapper for app.js compatibility + auto-reconnect.
  */
 
-// Message types
-const MSG_CODEC = 1;
-const MSG_WIRE_CHUNK = 2;
-const MSG_SERVER_SETTINGS = 3;
-const MSG_TIME = 4;
-const MSG_HELLO = 5;
+// ─── Tv (timestamp value) ──────────────────────────────────────────────────
 
-const HEADER_SIZE = 26;
+class Tv {
+    constructor(sec = 0, usec = 0) {
+        this.sec = sec;
+        this.usec = usec;
+    }
 
-// Playback constants (matching snapweb)
-const BUFFER_DURATION_MS = 80;
-const AUDIO_BUFFER_COUNT = 3;
-const MIN_TIME_SYNCS = 3;
+    setMilliseconds(ms) {
+        this.sec = Math.floor(ms / 1000);
+        this.usec = Math.floor(ms * 1000) % 1000000;
+    }
+
+    getMilliseconds() {
+        return this.sec * 1000 + this.usec / 1000;
+    }
+}
+
+// ─── BaseMessage ────────────────────────────────────────────────────────────
+// IMPORTANT: serialize/deserialize have an intentional perspective swap:
+//   serialize:   offset 6 = sent,     offset 14 = received
+//   deserialize: offset 6 = received, offset 14 = sent
+
+class BaseMessage {
+    constructor() {
+        this.type = 0;
+        this.id = 0;
+        this.refersTo = 0;
+        this.received = new Tv();
+        this.sent = new Tv();
+        this.size = 0;
+    }
+
+    deserialize(buffer) {
+        const view = new DataView(buffer);
+        this.type = view.getUint16(0, true);
+        this.id = view.getUint16(2, true);
+        this.refersTo = view.getUint16(4, true);
+        this.received = new Tv(view.getInt32(6, true), view.getInt32(10, true));
+        this.sent = new Tv(view.getInt32(14, true), view.getInt32(18, true));
+        this.size = view.getUint32(22, true);
+    }
+
+    serialize() {
+        this.size = 26 + this.getSize();
+        const buffer = new ArrayBuffer(this.size);
+        const view = new DataView(buffer);
+        view.setUint16(0, this.type, true);
+        view.setUint16(2, this.id, true);
+        view.setUint16(4, this.refersTo, true);
+        view.setInt32(6, this.sent.sec, true);
+        view.setInt32(10, this.sent.usec, true);
+        view.setInt32(14, this.received.sec, true);
+        view.setInt32(18, this.received.usec, true);
+        view.setUint32(22, this.size, true);
+        return buffer;
+    }
+
+    getSize() {
+        return 0;
+    }
+}
+
+// ─── TimeMessage ────────────────────────────────────────────────────────────
+
+class TimeMessage extends BaseMessage {
+    constructor(buffer) {
+        super();
+        this.latency = new Tv();
+        if (buffer) this.deserialize(buffer);
+        this.type = 4;
+    }
+
+    deserialize(buffer) {
+        super.deserialize(buffer);
+        const view = new DataView(buffer);
+        this.latency = new Tv(view.getInt32(26, true), view.getInt32(30, true));
+    }
+
+    serialize() {
+        const buffer = super.serialize();
+        const view = new DataView(buffer);
+        view.setInt32(26, this.latency.sec, true);
+        view.setInt32(30, this.latency.usec, true);
+        return buffer;
+    }
+
+    getSize() {
+        return 8;
+    }
+}
+
+// ─── JsonMessage ────────────────────────────────────────────────────────────
+
+class JsonMessage extends BaseMessage {
+    constructor(buffer) {
+        super();
+        this.json = null;
+        if (buffer) this.deserialize(buffer);
+    }
+
+    deserialize(buffer) {
+        super.deserialize(buffer);
+        const view = new DataView(buffer);
+        const size = view.getUint32(26, true);
+        const decoder = new TextDecoder();
+        this.json = JSON.parse(decoder.decode(buffer.slice(30, 30 + size)));
+    }
+
+    serialize() {
+        const buffer = super.serialize();
+        const view = new DataView(buffer);
+        const jsonStr = JSON.stringify(this.json);
+        view.setUint32(26, jsonStr.length, true);
+        const encoder = new TextEncoder();
+        const encoded = encoder.encode(jsonStr);
+        for (let i = 0; i < encoded.length; ++i)
+            view.setUint8(30 + i, encoded[i]);
+        return buffer;
+    }
+
+    getSize() {
+        const encoder = new TextEncoder();
+        const encoded = encoder.encode(JSON.stringify(this.json));
+        return encoded.length + 4;
+    }
+}
+
+// ─── HelloMessage ───────────────────────────────────────────────────────────
+
+class HelloMessage extends JsonMessage {
+    constructor(buffer) {
+        super(buffer);
+        this.type = 5;
+        this.mac = '';
+        this.hostname = '';
+        this.version = '0.28.0';
+        this.clientName = 'yt-dlp-web';
+        this.os = '';
+        this.arch = 'web';
+        this.instance = 1;
+        this.uniqueId = '';
+        this.snapStreamProtocolVersion = 2;
+    }
+
+    serialize() {
+        this.json = {
+            MAC: this.mac,
+            HostName: this.hostname,
+            Version: this.version,
+            ClientName: this.clientName,
+            OS: this.os,
+            Arch: this.arch,
+            Instance: this.instance,
+            ID: this.uniqueId,
+            SnapStreamProtocolVersion: this.snapStreamProtocolVersion,
+        };
+        return super.serialize();
+    }
+}
+
+// ─── ServerSettingsMessage ──────────────────────────────────────────────────
+
+class ServerSettingsMessage extends JsonMessage {
+    constructor(buffer) {
+        super(buffer);
+        this.type = 3;
+        this.bufferMs = 0;
+        this.latency = 0;
+        this.volumePercent = 0;
+        this.muted = false;
+        if (buffer) this._parse();
+    }
+
+    _parse() {
+        if (!this.json) return;
+        this.bufferMs = this.json.bufferMs || 0;
+        this.latency = this.json.latency || 0;
+        this.volumePercent = this.json.volume || 0;
+        this.muted = !!this.json.muted;
+    }
+}
+
+// ─── CodecMessage ───────────────────────────────────────────────────────────
+
+class CodecMessage extends BaseMessage {
+    constructor(buffer) {
+        super();
+        this.codec = '';
+        this.payload = new ArrayBuffer(0);
+        if (buffer) this.deserialize(buffer);
+        this.type = 1;
+    }
+
+    deserialize(buffer) {
+        super.deserialize(buffer);
+        const view = new DataView(buffer);
+        const codecSize = view.getInt32(26, true);
+        const decoder = new TextDecoder('utf-8');
+        this.codec = decoder.decode(buffer.slice(30, 30 + codecSize));
+        const payloadSize = view.getInt32(30 + codecSize, true);
+        this.payload = buffer.slice(34 + codecSize, 34 + codecSize + payloadSize);
+    }
+}
+
+// ─── SampleFormat ───────────────────────────────────────────────────────────
+
+class SampleFormat {
+    constructor() {
+        this.rate = 48000;
+        this.channels = 2;
+        this.bits = 16;
+    }
+
+    msRate() {
+        return this.rate / 1000;
+    }
+
+    frameSize() {
+        return this.channels * this.sampleSize();
+    }
+
+    sampleSize() {
+        if (this.bits === 24) return 4;
+        return this.bits / 8;
+    }
+}
+
+// ─── PcmChunkMessage ────────────────────────────────────────────────────────
+
+class PcmChunkMessage extends BaseMessage {
+    constructor(buffer, sampleFormat) {
+        super();
+        this.timestamp = new Tv();
+        this.payload = new ArrayBuffer(0);
+        this.idx = 0;
+        this.sampleFormat = sampleFormat;
+        if (buffer) this.deserialize(buffer);
+        this.type = 2;
+    }
+
+    deserialize(buffer) {
+        super.deserialize(buffer);
+        const view = new DataView(buffer);
+        this.timestamp = new Tv(view.getInt32(26, true), view.getInt32(30, true));
+        this.payload = buffer.slice(38);
+    }
+
+    readFrames(frames) {
+        const frameSize = this.sampleFormat.frameSize();
+        let frameCnt = frames;
+        if (this.idx + frames > this.payloadSize() / frameSize)
+            frameCnt = (this.payloadSize() / frameSize) - this.idx;
+        const begin = this.idx * frameSize;
+        this.idx += frameCnt;
+        const end = begin + frameCnt * frameSize;
+        return this.payload.slice(begin, end);
+    }
+
+    getFrameCount() {
+        return this.payloadSize() / this.sampleFormat.frameSize();
+    }
+
+    isEndOfChunk() {
+        return this.idx >= this.getFrameCount();
+    }
+
+    startMs() {
+        return this.timestamp.getMilliseconds() + 1000 * (this.idx / this.sampleFormat.rate);
+    }
+
+    duration() {
+        return 1000 * ((this.getFrameCount() - this.idx) / this.sampleFormat.rate);
+    }
+
+    payloadSize() {
+        return this.payload.byteLength;
+    }
+
+    clearPayload() {
+        this.payload = new ArrayBuffer(0);
+    }
+
+    addPayload(buffer) {
+        const payload = new ArrayBuffer(this.payload.byteLength + buffer.byteLength);
+        const view = new DataView(payload);
+        const viewOld = new DataView(this.payload);
+        const viewNew = new DataView(buffer);
+        for (let i = 0; i < viewOld.byteLength; ++i)
+            view.setInt8(i, viewOld.getInt8(i));
+        for (let i = 0; i < viewNew.byteLength; ++i)
+            view.setInt8(i + viewOld.byteLength, viewNew.getInt8(i));
+        this.payload = payload;
+    }
+}
+
+// ─── PcmDecoder ─────────────────────────────────────────────────────────────
+
+class PcmDecoder {
+    setHeader(buffer) {
+        const sampleFormat = new SampleFormat();
+        const view = new DataView(buffer);
+        sampleFormat.channels = view.getUint16(22, true);
+        sampleFormat.rate = view.getUint32(24, true);
+        sampleFormat.bits = view.getUint16(34, true);
+        return sampleFormat;
+    }
+
+    decode(chunk) {
+        return chunk;
+    }
+}
 
 // ─── TimeProvider ───────────────────────────────────────────────────────────
+// now() returns ctx.currentTime * 1000 (ms since AudioContext creation)
+// All time calculations happen in this domain — NOT Date.now()!
 
 class TimeProvider {
-    constructor() {
-        this._ctx = null;
-        this._diffMedian = 0;  // server_time - wall_time (ms)
-        this._diffs = [];
+    constructor(ctx) {
+        this.ctx = null;
+        this.diffBuffer = [];
+        this.diff = 0;
+        if (ctx) this.setAudioContext(ctx);
     }
 
     setAudioContext(ctx) {
-        this._ctx = ctx;
+        this.ctx = ctx;
+        this.reset();
     }
 
-    /** Current wall-clock time in milliseconds (Date.now) */
+    reset() {
+        this.diffBuffer.length = 0;
+        this.diff = 0;
+    }
+
+    setDiff(c2s, s2c) {
+        if (this.now() === 0) {
+            this.reset();
+        } else {
+            if (this.diffBuffer.push((c2s - s2c) / 2) > 100)
+                this.diffBuffer.shift();
+            const sorted = [...this.diffBuffer].sort((a, b) => a - b);
+            this.diff = sorted[Math.floor(sorted.length / 2)];
+        }
+    }
+
     now() {
-        return Date.now();
-    }
-
-    /** Convert wall-clock time (ms) to server time (ms) */
-    serverTime(wallMs) {
-        return wallMs + this._diffMedian;
-    }
-
-    /** Convert server time (ms) to wall-clock time (ms) */
-    wallTime(serverMs) {
-        return serverMs - this._diffMedian;
-    }
-
-    /** Convert wall-clock time (ms) to AudioContext time (seconds) */
-    wallToCtx(wallMs) {
-        if (!this._ctx) return 0;
-        const nowWall = Date.now();
-        const nowCtx = this._ctx.currentTime;
-        return nowCtx + (wallMs - nowWall) / 1000;
-    }
-
-    /** Convert server time (ms) to AudioContext time (seconds) */
-    serverToCtx(serverMs) {
-        return this.wallToCtx(this.wallTime(serverMs));
-    }
-
-    /** Add a time offset sample (serverTime - clientTime, in ms) */
-    addOffset(offsetMs) {
-        this._diffs.push(offsetMs);
-        if (this._diffs.length > 100) {
-            this._diffs.shift();
+        if (!this.ctx) {
+            return performance.now();
         }
-        const sorted = [...this._diffs].sort((a, b) => a - b);
-        this._diffMedian = sorted[Math.floor(sorted.length / 2)];
-    }
-
-    get diffMs() { return this._diffMedian; }
-    get syncCount() { return this._diffs.length; }
-    get ready() { return this._diffs.length >= MIN_TIME_SYNCS; }
-}
-
-// ─── PcmChunk ───────────────────────────────────────────────────────────────
-
-class PcmChunk {
-    /**
-     * @param {number} timestampMs - server timestamp of chunk start (ms)
-     * @param {Float32Array[]} channels - decoded channel data [ch0, ch1, ...]
-     * @param {number} sampleRate
-     */
-    constructor(timestampMs, channels, sampleRate) {
-        this.timestampMs = timestampMs;
-        this.channels = channels;
-        this.sampleRate = sampleRate;
-        this.idx = 0; // current read position in frames
-    }
-
-    /** Total frames in chunk */
-    get totalFrames() {
-        return this.channels[0].length;
-    }
-
-    /** Remaining unread frames */
-    get remaining() {
-        return this.totalFrames - this.idx;
-    }
-
-    /** Whether this chunk has been fully read */
-    get empty() {
-        return this.idx >= this.totalFrames;
-    }
-
-    /** Server time (ms) at current read position */
-    startMs() {
-        return this.timestampMs + (this.idx / this.sampleRate) * 1000;
-    }
-
-    /** Duration of remaining data in ms */
-    durationMs() {
-        return (this.remaining / this.sampleRate) * 1000;
-    }
-
-    /**
-     * Read up to n frames from this chunk.
-     * Returns array of Float32Arrays (one per channel), advances idx.
-     */
-    readFrames(n) {
-        const count = Math.min(n, this.remaining);
-        const result = [];
-        for (let ch = 0; ch < this.channels.length; ch++) {
-            result.push(this.channels[ch].subarray(this.idx, this.idx + count));
+        // Use getOutputTimestamp if available for better accuracy
+        const ctx = this.ctx;
+        if (ctx.getOutputTimestamp) {
+            const ts = ctx.getOutputTimestamp();
+            if (ts.contextTime !== undefined) {
+                return ts.contextTime * 1000;
+            }
         }
-        this.idx += count;
-        return { data: result, frames: count };
+        return ctx.currentTime * 1000;
     }
 
-    /**
-     * Skip n frames (for hard sync — dropping old data).
-     */
-    skipFrames(n) {
-        this.idx = Math.min(this.idx + n, this.totalFrames);
+    nowSec() {
+        return this.now() / 1000;
+    }
+
+    serverNow() {
+        return this.serverTime(this.now());
+    }
+
+    serverTime(localTimeMs) {
+        return localTimeMs + this.diff;
     }
 }
 
 // ─── AudioStream ────────────────────────────────────────────────────────────
+// Exact port of snapweb's AudioStream
 
 class AudioStream {
-    constructor(timeProvider, sampleRate, channels) {
+    constructor(timeProvider, sampleFormat, bufferMs) {
         this._timeProvider = timeProvider;
-        this._sampleRate = sampleRate;
-        this._channels = channels;
-        this._chunks = [];
-        this._bufferMs = 1000;
+        this._sampleFormat = sampleFormat;
+        this._bufferMs = bufferMs;
+        this.chunks = [];
+        this.chunk = undefined;
+        this.volume = 1;
+        this.muted = false;
+        this.lastLog = 0;
     }
 
-    set bufferMs(val) { this._bufferMs = val; }
-    get bufferMs() { return this._bufferMs; }
+    setVolume(percent, muted) {
+        this.volume = percent / 100;
+        this.muted = muted;
+    }
 
-    /** Add a decoded PCM chunk to the stream */
     addChunk(chunk) {
-        this._chunks.push(chunk);
-        // Drop chunks older than 5s + bufferMs
-        const maxAge = 5000 + this._bufferMs;
-        const now = this._timeProvider.now();
-        const serverNow = this._timeProvider.serverTime(now);
-        while (this._chunks.length > 0) {
-            const c = this._chunks[0];
-            const age = serverNow - (c.startMs() + c.durationMs());
-            if (age > maxAge) {
-                this._chunks.shift();
+        this.chunks.push(chunk);
+        while (this.chunks.length > 0) {
+            const age = this._timeProvider.serverNow() - this.chunks[0].timestamp.getMilliseconds();
+            if (age > 5000 + this._bufferMs) {
+                this.chunks.shift();
+                console.log('Dropping old chunk: ' + age.toFixed(2) + ', left: ' + this.chunks.length);
             } else {
                 break;
             }
         }
     }
 
-    /**
-     * Fill an AudioBuffer for playback at the given time.
-     * Implements hard sync (>5ms) and soft sync (0.1-5ms).
-     *
-     * @param {AudioBuffer} buffer - buffer to fill
-     * @param {number} playTimeMs - local playback time in ms
-     * @returns {boolean} true if buffer was filled (at least partially)
-     */
     getNextBuffer(buffer, playTimeMs) {
-        const serverPlayTimeMs = this._timeProvider.serverTime(playTimeMs);
+        if (!this.chunk) {
+            this.chunk = this.chunks.shift();
+        }
+
         const frames = buffer.length;
+        const left = new Float32Array(frames);
+        const right = new Float32Array(frames);
+        let read = 0;
+        let pos = 0;
 
-        // Remove fully-read chunks
-        while (this._chunks.length > 0 && this._chunks[0].empty) {
-            this._chunks.shift();
-        }
+        const serverPlayTimeMs = this._timeProvider.serverTime(playTimeMs);
+        if (this.chunk) {
+            let age = serverPlayTimeMs - this.chunk.startMs();
+            const reqChunkDuration = frames / this._sampleFormat.msRate();
 
-        if (this._chunks.length === 0) {
-            for (let ch = 0; ch < this._channels; ch++) {
-                buffer.getChannelData(ch).fill(0);
+            const secs = Math.floor(Date.now() / 1000);
+            if (this.lastLog !== secs) {
+                this.lastLog = secs;
+                console.log('age: ' + age.toFixed(2) + ', req: ' + reqChunkDuration);
             }
-            return false;
-        }
 
-        const chunk = this._chunks[0];
-        const age = serverPlayTimeMs - chunk.startMs();
+            if (age < -reqChunkDuration) {
+                console.log('Chunk too young, returning silence');
+            } else {
+                if (Math.abs(age) > 5) {
+                    // Hard sync: seek to desired position
+                    while (this.chunk && age > this.chunk.duration()) {
+                        console.log('Chunk too old, dropping (age: ' + age.toFixed(2) + ' > ' + this.chunk.duration().toFixed(2) + ')');
+                        this.chunk = this.chunks.shift();
+                        if (!this.chunk) break;
+                        age = serverPlayTimeMs - this.chunk.startMs();
+                    }
+                    if (this.chunk) {
+                        if (age > 0) {
+                            console.log('Fast forwarding ' + age.toFixed(2) + 'ms');
+                            this.chunk.readFrames(Math.floor(age * this.chunk.sampleFormat.msRate()));
+                        } else if (age < 0) {
+                            console.log('Playing silence ' + (-age).toFixed(2) + 'ms');
+                            const silentFrames = Math.floor(-age * this.chunk.sampleFormat.msRate());
+                            left.fill(0, 0, silentFrames);
+                            right.fill(0, 0, silentFrames);
+                            read = silentFrames;
+                            pos = silentFrames;
+                        }
+                        age = 0;
+                    }
+                }
 
-        // Diagnostic: log first few calls
-        if (!this._logCount) this._logCount = 0;
-        if (this._logCount < 5) {
-            console.log(`[AudioStream] DEBUG: playTimeMs=${playTimeMs.toFixed(0)} serverPlayTimeMs=${serverPlayTimeMs.toFixed(0)} chunk.startMs=${chunk.startMs().toFixed(0)} diff=${this._timeProvider.diffMs.toFixed(1)} age=${age.toFixed(1)}ms`);
-            this._logCount++;
-        }
+                // Soft sync
+                let addFrames = 0;
+                let everyN = 0;
+                if (age > 0.1) {
+                    addFrames = Math.ceil(age);
+                } else if (age < -0.1) {
+                    addFrames = Math.floor(age);
+                }
 
-        // Hard sync: age > 5ms — we're behind, skip samples
-        if (age > 5) {
-            const skipFrames = Math.floor((age / 1000) * this._sampleRate);
-            let skipped = 0;
-            while (skipped < skipFrames && this._chunks.length > 0) {
-                const c = this._chunks[0];
-                const toSkip = Math.min(skipFrames - skipped, c.remaining);
-                c.skipFrames(toSkip);
-                skipped += toSkip;
-                if (c.empty) this._chunks.shift();
+                const readFrames = frames + addFrames - read;
+                if (addFrames !== 0)
+                    everyN = Math.ceil((frames + addFrames - read) / (Math.abs(addFrames) + 1));
+
+                while ((read < readFrames) && this.chunk) {
+                    const pcmChunk = this.chunk;
+                    const pcmBuffer = pcmChunk.readFrames(readFrames - read);
+                    const normalize = 2 ** pcmChunk.sampleFormat.bits;
+                    let payload;
+                    if (pcmChunk.sampleFormat.bits >= 24)
+                        payload = new Int32Array(pcmBuffer);
+                    else
+                        payload = new Int16Array(pcmBuffer);
+
+                    for (let i = 0; i < payload.length; i += 2) {
+                        read++;
+                        left[pos] = payload[i] / normalize;
+                        right[pos] = payload[i + 1] / normalize;
+                        if ((everyN !== 0) && (read % everyN === 0)) {
+                            if (addFrames > 0) {
+                                pos--;
+                            } else {
+                                left[pos + 1] = left[pos];
+                                right[pos + 1] = right[pos];
+                                pos++;
+                            }
+                        }
+                        pos++;
+                    }
+                    if (pcmChunk.isEndOfChunk()) {
+                        this.chunk = this.chunks.shift();
+                    }
+                }
+                if (addFrames !== 0)
+                    console.debug('Pos: ' + pos + ', frames: ' + frames + ', add: ' + addFrames + ', everyN: ' + everyN);
+                if (read === readFrames)
+                    read = frames;
             }
-            console.log(`[AudioStream] Hard sync: skipped ${skipped} frames (age: ${age.toFixed(1)}ms)`);
-        }
-        // Hard sync: age < -5ms — we're ahead, insert silence
-        else if (age < -5) {
-            const silenceFrames = Math.min(
-                Math.floor((-age / 1000) * this._sampleRate),
-                frames
-            );
-            for (let ch = 0; ch < this._channels; ch++) {
-                buffer.getChannelData(ch).fill(0, 0, silenceFrames);
-            }
-            // Fill remaining from chunks
-            if (silenceFrames < frames) {
-                this._fillBuffer(buffer, silenceFrames, frames - silenceFrames, 0);
-            }
-            console.log(`[AudioStream] Hard sync: inserted ${silenceFrames} silence frames (age: ${age.toFixed(1)}ms)`);
-            return true;
         }
 
-        // Soft sync or no correction needed
-        let softSyncFrames = 0;
-        if (Math.abs(age) > 0.1 && Math.abs(age) <= 5) {
-            // Calculate how many frames to add (negative age) or remove (positive age)
-            softSyncFrames = Math.round((age / 1000) * this._sampleRate);
+        if (read < frames) {
+            console.log('Failed to get chunk, read: ' + read + '/' + frames + ', chunks left: ' + this.chunks.length);
+            left.fill(0, pos);
+            right.fill(0, pos);
         }
 
-        this._fillBuffer(buffer, 0, frames, softSyncFrames);
-        return true;
+        buffer.getChannelData(0).set(left);
+        buffer.getChannelData(1).set(right);
+    }
+}
+
+// ─── PlayBuffer ─────────────────────────────────────────────────────────────
+
+class PlayBuffer {
+    constructor(buffer, playTime, source, destination) {
+        this.buffer = buffer;
+        this.playTime = playTime;
+        this.source = source;
+        this.source.buffer = this.buffer;
+        this.source.connect(destination);
+        this.onended = () => {};
+        this.num = 0;
     }
 
-    /**
-     * Fill buffer from chunks, optionally applying soft sync.
-     * softSyncFrames > 0: drop that many frames (we're behind)
-     * softSyncFrames < 0: duplicate that many frames (we're ahead)
-     */
-    _fillBuffer(buffer, offset, count, softSyncFrames) {
-        const channelArrays = [];
-        for (let ch = 0; ch < this._channels; ch++) {
-            channelArrays.push(buffer.getChannelData(ch));
-        }
-
-        let written = offset;
-        const end = offset + count;
-
-        if (softSyncFrames > 0) {
-            // Drop frames: read (count + softSyncFrames) from chunks, write count to buffer
-            // Evenly distribute drops across the buffer
-            const totalRead = count + softSyncFrames;
-            const dropInterval = Math.floor(totalRead / softSyncFrames);
-            let readCount = 0;
-            let dropCount = 0;
-
-            while (written < end && this._chunks.length > 0) {
-                const c = this._chunks[0];
-                if (c.empty) { this._chunks.shift(); continue; }
-
-                const { data, frames } = c.readFrames(1);
-                readCount++;
-
-                if (dropCount < softSyncFrames && readCount % dropInterval === 0) {
-                    // Drop this frame
-                    dropCount++;
-                    continue;
-                }
-
-                for (let ch = 0; ch < this._channels; ch++) {
-                    channelArrays[ch][written] = data[ch][0];
-                }
-                written++;
-                if (c.empty) this._chunks.shift();
-            }
-        } else if (softSyncFrames < 0) {
-            // Duplicate frames: read (count + softSyncFrames) from chunks, write count to buffer
-            const dupCount = -softSyncFrames;
-            const totalRead = count - dupCount;
-            const dupInterval = Math.max(1, Math.floor(totalRead / dupCount));
-            let readTotal = 0;
-            let duped = 0;
-
-            while (written < end && this._chunks.length > 0) {
-                const c = this._chunks[0];
-                if (c.empty) { this._chunks.shift(); continue; }
-
-                const { data, frames } = c.readFrames(1);
-                readTotal++;
-
-                for (let ch = 0; ch < this._channels; ch++) {
-                    channelArrays[ch][written] = data[ch][0];
-                }
-                written++;
-
-                // Duplicate this frame
-                if (duped < dupCount && readTotal % dupInterval === 0 && written < end) {
-                    for (let ch = 0; ch < this._channels; ch++) {
-                        channelArrays[ch][written] = data[ch][0];
-                    }
-                    written++;
-                    duped++;
-                }
-
-                if (c.empty) this._chunks.shift();
-            }
-        } else {
-            // No correction — straight copy
-            while (written < end && this._chunks.length > 0) {
-                const c = this._chunks[0];
-                if (c.empty) { this._chunks.shift(); continue; }
-
-                const toRead = Math.min(end - written, c.remaining);
-                const { data, frames } = c.readFrames(toRead);
-
-                for (let ch = 0; ch < this._channels; ch++) {
-                    channelArrays[ch].set(data[ch], written);
-                }
-                written += frames;
-                if (c.empty) this._chunks.shift();
-            }
-        }
-
-        // Fill remainder with silence if we ran out of data
-        if (written < end) {
-            for (let ch = 0; ch < this._channels; ch++) {
-                channelArrays[ch].fill(0, written, end);
-            }
-        }
+    start() {
+        this.source.onended = () => {
+            this.onended(this);
+        };
+        this.source.start(this.playTime);
     }
 }
 
 // ─── SnapClient ─────────────────────────────────────────────────────────────
+// Wrapper that exposes the same API as before for app.js compatibility,
+// but internally uses the exact snapweb SnapStream logic.
+
+function _uuidv4() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = Math.random() * 16 | 0, v = c === 'x' ? r : ((r & 0x3) | 0x8);
+        return v.toString(16);
+    });
+}
+
+function _getClientId() {
+    let id = localStorage.getItem('snapclient_uniqueId');
+    if (!id) {
+        id = _uuidv4();
+        localStorage.setItem('snapclient_uniqueId', id);
+    }
+    return id;
+}
 
 class SnapClient {
     constructor() {
@@ -356,26 +570,26 @@ class SnapClient {
         this._gainNode = null;
         this._connected = false;
         this._playing = false;
-        this._codec = null;
-        this._sampleRate = 44100;
-        this._channels = 2;
-        this._bitsPerSample = 16;
-        this._msgId = 0;
-        this._id = this._generateId();
         this._onStateChange = null;
 
-        // Time sync
+        // SnapStream internals
         this._timeProvider = new TimeProvider();
-        this._timeSyncInterval = null;
-
-        // Audio stream
         this._stream = null;
+        this._decoder = null;
+        this._sampleFormat = null;
+        this._serverSettings = null;
+        this._msgId = 0;
+        this._syncHandle = null;
 
-        // Playback state (pull-model)
+        // Playback state
         this._playTime = 0;
+        this._audioBuffers = [];
         this._freeBuffers = [];
-        this._bufferFrameCount = 0;
+        this._bufferDurationMs = 80;
+        this._bufferFrameCount = 3844;
+        this._audioBufferCount = 3;
         this._bufferMs = 1000;
+        this._bufferNum = 0;
         this._latency = 0;
 
         // Auto-reconnect
@@ -387,29 +601,66 @@ class SnapClient {
         this._volume = 100;
     }
 
-    /** Connect to snapserver stream WebSocket (via HTTP port) */
     connect(host, port = 1780) {
         if (this._ws) this._closeWs();
-
         this._autoReconnect = true;
         this._reconnectHost = host;
         this._reconnectPort = port;
         this._reconnectDelay = 1000;
         this._clearReconnectTimer();
-
         this._doConnect(host, port);
+    }
+
+    disconnect() {
+        this._autoReconnect = false;
+        this._clearReconnectTimer();
+        if (this._syncHandle) {
+            clearInterval(this._syncHandle);
+            this._syncHandle = null;
+        }
+        this._stopAudio();
+        this._closeWs();
+        if (this._ctx) {
+            this._ctx.close().catch(() => {});
+            this._ctx = null;
+            this._gainNode = null;
+        }
+        this._connected = false;
+        this._playing = false;
+        this._stream = null;
+        this._decoder = null;
+        this._sampleFormat = null;
+        this._notify();
+    }
+
+    setVolume(vol) {
+        this._volume = Math.max(0, Math.min(100, vol));
+        if (this._gainNode) {
+            this._gainNode.gain.value = this._volume / 100;
+        }
+    }
+
+    get connected() { return this._connected; }
+    get playing() { return this._playing; }
+    set onStateChange(fn) { this._onStateChange = fn; }
+
+    // ─── Internal ───
+
+    _notify() {
+        if (this._onStateChange) this._onStateChange(this._connected);
     }
 
     _doConnect(host, port) {
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const url = `${proto}//${host}:${port}/stream`;
 
-        // Reset state for new connection
         this._timeProvider = new TimeProvider();
         this._stream = null;
         this._playTime = 0;
+        this._audioBuffers = [];
         this._freeBuffers = [];
         this._playing = false;
+        this._bufferNum = 0;
 
         try {
             this._ws = new WebSocket(url);
@@ -419,26 +670,32 @@ class SnapClient {
                 console.log('[SnapClient] Connected to', url);
                 this._connected = true;
                 this._reconnectDelay = 1000;
-                this._sendHello();
-                this._sendTimeRequest();
-                this._startTimeSync();
+
+                const hello = new HelloMessage();
+                hello.mac = '00:00:00:00:00:00';
+                hello.arch = 'web';
+                hello.os = navigator.platform || 'unknown';
+                hello.hostname = 'Snapweb client';
+                hello.uniqueId = _getClientId();
+                this._sendMessage(hello);
+
+                this._syncTime();
+                this._syncHandle = setInterval(() => this._syncTime(), 1000);
                 this._notify();
             };
 
-            this._ws.onmessage = (event) => {
-                this._onMessage(event.data);
-            };
+            this._ws.onmessage = (ev) => this._onMessage(ev);
 
             this._ws.onclose = () => {
                 console.log('[SnapClient] Disconnected');
+                if (this._syncHandle) {
+                    clearInterval(this._syncHandle);
+                    this._syncHandle = null;
+                }
                 this._connected = false;
                 this._playing = false;
-                this._stopTimeSync();
                 this._notify();
-
-                if (this._autoReconnect) {
-                    this._scheduleReconnect();
-                }
+                if (this._autoReconnect) this._scheduleReconnect();
             };
 
             this._ws.onerror = (err) => {
@@ -446,9 +703,7 @@ class SnapClient {
             };
         } catch (e) {
             console.error('[SnapClient] Failed to connect:', e);
-            if (this._autoReconnect) {
-                this._scheduleReconnect();
-            }
+            if (this._autoReconnect) this._scheduleReconnect();
         }
     }
 
@@ -457,9 +712,7 @@ class SnapClient {
         console.log(`[SnapClient] Reconnecting in ${this._reconnectDelay}ms...`);
         this._reconnectTimer = setTimeout(() => {
             this._reconnectTimer = null;
-            if (this._autoReconnect) {
-                this._doConnect(this._reconnectHost, this._reconnectPort);
-            }
+            if (this._autoReconnect) this._doConnect(this._reconnectHost, this._reconnectPort);
         }, this._reconnectDelay);
         this._reconnectDelay = Math.min(this._reconnectDelay * 2, 10000);
     }
@@ -472,7 +725,6 @@ class SnapClient {
     }
 
     _closeWs() {
-        this._stopTimeSync();
         if (this._ws) {
             this._ws.onclose = null;
             this._ws.close();
@@ -480,357 +732,173 @@ class SnapClient {
         }
     }
 
-    /** Disconnect and stop playback (manual — disables auto-reconnect) */
-    disconnect() {
-        this._autoReconnect = false;
-        this._clearReconnectTimer();
-        this._closeWs();
-        if (this._ctx) {
-            this._ctx.close().catch(() => {});
-            this._ctx = null;
-            this._gainNode = null;
-        }
-        this._connected = false;
-        this._playing = false;
-        this._stream = null;
-        this._freeBuffers = [];
-        this._notify();
-    }
+    _setupAudioContext() {
+        if (this._ctx) return true;
+        if (!window.AudioContext && !window.webkitAudioContext) return false;
 
-    /** Set volume (0-100) */
-    setVolume(vol) {
-        this._volume = Math.max(0, Math.min(100, vol));
-        if (this._gainNode) {
-            this._gainNode.gain.value = this._volume / 100;
-        }
-    }
-
-    get connected() { return this._connected; }
-    get playing() { return this._playing; }
-
-    set onStateChange(fn) { this._onStateChange = fn; }
-
-    // --- Private ---
-
-    _notify() {
-        if (this._onStateChange) this._onStateChange(this._connected);
-    }
-
-    _generateId() {
-        const hex = () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
-        return `${hex()}${hex()}${hex()}${hex()}${hex()}${hex()}`;
-    }
-
-    _initAudio() {
-        if (this._ctx) return;
-        this._ctx = new AudioContext({ sampleRate: this._sampleRate });
+        const ACtor = window.AudioContext || window.webkitAudioContext;
+        const options = {
+            latencyHint: 'interactive',
+            sampleRate: this._sampleFormat ? this._sampleFormat.rate : undefined,
+        };
+        this._ctx = new ACtor(options);
         this._gainNode = this._ctx.createGain();
-        this._gainNode.gain.value = this._volume / 100;
         this._gainNode.connect(this._ctx.destination);
-        if (this._ctx.state === 'suspended') {
-            this._ctx.resume();
-        }
-        this._timeProvider.setAudioContext(this._ctx);
-        this._latency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
-
-        // Calculate buffer frame count from duration
-        this._bufferFrameCount = Math.ceil(this._sampleRate * BUFFER_DURATION_MS / 1000);
-
-        // Initialize audio stream
-        this._stream = new AudioStream(this._timeProvider, this._sampleRate, this._channels);
-        this._stream.bufferMs = this._bufferMs;
+        return true;
     }
 
-    // --- Pull-model playback ---
+    _stopAudio() {
+        this._ctx && this._ctx.suspend && this._ctx.suspend().catch(() => {});
+        while (this._audioBuffers.length > 0) {
+            const buf = this._audioBuffers.pop();
+            buf.onended = () => {};
+            buf.source.stop();
+        }
+        this._freeBuffers.length = 0;
+    }
 
-    /** Start playback with pre-filled buffers */
+    // ─── Message handling (exact snapweb logic) ───
+
+    _onMessage(msg) {
+        const view = new DataView(msg.data);
+        const type = view.getUint16(0, true);
+
+        if (type === 1) {
+            // Codec
+            const codec = new CodecMessage(msg.data);
+            console.log('[SnapClient] Codec: ' + codec.codec);
+            if (codec.codec === 'pcm') {
+                this._decoder = new PcmDecoder();
+            } else {
+                console.error('[SnapClient] Unsupported codec: ' + codec.codec + ' — snapserver must use codec=pcm');
+                return;
+            }
+            this._sampleFormat = this._decoder.setHeader(codec.payload);
+            console.log('[SnapClient] SampleFormat: ' + this._sampleFormat.rate + ':' + this._sampleFormat.bits + ':' + this._sampleFormat.channels);
+
+            if (this._sampleFormat.channels !== 2 || this._sampleFormat.bits < 16) {
+                console.error('[SnapClient] Stream must be stereo with 16/24/32 bit depth');
+                return;
+            }
+
+            if (this._bufferDurationMs !== 0) {
+                this._bufferFrameCount = Math.floor(this._bufferDurationMs * this._sampleFormat.msRate());
+            }
+
+            // Setup audio context with correct sample rate
+            if (this._ctx && this._sampleFormat.rate !== this._ctx.sampleRate) {
+                console.log('[SnapClient] Switching AudioContext to ' + this._sampleFormat.rate + ' Hz');
+                this._stopAudio();
+                this._ctx.close().catch(() => {});
+                this._ctx = null;
+                this._gainNode = null;
+            }
+
+            if (!this._setupAudioContext()) {
+                console.error('[SnapClient] Web Audio API not supported');
+                return;
+            }
+
+            this._ctx.resume();
+            this._timeProvider.setAudioContext(this._ctx);
+
+            // Apply server volume/mute if we have settings
+            if (this._serverSettings) {
+                this._gainNode.gain.value = this._serverSettings.muted ? 0 : this._serverSettings.volumePercent / 100;
+            } else {
+                this._gainNode.gain.value = this._volume / 100;
+            }
+
+            this._latency = (this._ctx.baseLatency || 0) + (this._ctx.outputLatency || 0);
+            console.log('[SnapClient] Latency: base=' + (this._ctx.baseLatency || 0) + ', output=' + (this._ctx.outputLatency || 0));
+
+            this._stream = new AudioStream(this._timeProvider, this._sampleFormat, this._bufferMs);
+            this._play();
+
+        } else if (type === 2) {
+            // Wire chunk
+            if (!this._decoder || !this._sampleFormat) return;
+            const pcmChunk = new PcmChunkMessage(msg.data, this._sampleFormat);
+            const decoded = this._decoder.decode(pcmChunk);
+            if (decoded && this._stream) {
+                this._stream.addChunk(decoded);
+            }
+
+        } else if (type === 3) {
+            // Server settings
+            this._serverSettings = new ServerSettingsMessage(msg.data);
+            if (this._gainNode) {
+                // Use local volume override if set, otherwise server volume
+                this._gainNode.gain.value = this._serverSettings.muted ? 0 : this._volume / 100;
+            }
+            this._bufferMs = this._serverSettings.bufferMs - this._serverSettings.latency;
+            console.log('[SnapClient] ServerSettings: bufferMs=' + this._serverSettings.bufferMs +
+                ', latency=' + this._serverSettings.latency +
+                ', volume=' + this._serverSettings.volumePercent +
+                ', muted=' + this._serverSettings.muted);
+
+        } else if (type === 4) {
+            // Time sync
+            if (this._timeProvider) {
+                const time = new TimeMessage(msg.data);
+                this._timeProvider.setDiff(
+                    time.latency.getMilliseconds(),
+                    this._timeProvider.now() - time.sent.getMilliseconds()
+                );
+            }
+        }
+    }
+
+    _sendMessage(msg) {
+        msg.sent = new Tv();
+        msg.sent.setMilliseconds(this._timeProvider.now());
+        msg.id = ++this._msgId;
+        if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._ws.send(msg.serialize());
+        }
+    }
+
+    _syncTime() {
+        const t = new TimeMessage();
+        t.latency.setMilliseconds(this._timeProvider.now());
+        this._sendMessage(t);
+    }
+
+    // ─── Playback (exact snapweb play/playNext) ───
+
     _play() {
-        if (!this._ctx || !this._stream || !this._timeProvider.ready) return;
-
-        // _playTime is in AudioContext seconds domain
-        this._playTime = this._ctx.currentTime + 0.1;
-
-        for (let i = 0; i < AUDIO_BUFFER_COUNT; i++) {
+        if (!this._ctx || !this._stream) return;
+        this._playTime = this._timeProvider.nowSec() + 0.1;
+        for (let i = 1; i <= this._audioBufferCount; ++i) {
             this._playNext();
         }
     }
 
-    /** Fill and schedule next audio buffer */
     _playNext() {
         if (!this._ctx || !this._stream || !this._connected) return;
 
-        // Get or create a buffer
-        let buffer;
-        if (this._freeBuffers.length > 0) {
-            buffer = this._freeBuffers.pop();
-        } else {
-            buffer = this._ctx.createBuffer(this._channels, this._bufferFrameCount, this._sampleRate);
-        }
-
-        // Convert playTime (ctx seconds) to wall-clock ms for sync calculation
-        // playTimeMs = wall-clock time when this buffer will actually be heard
-        const nowCtx = this._ctx.currentTime;
-        const nowWall = Date.now();
-        const playWallMs = nowWall + (this._playTime - nowCtx + this._latency) * 1000;
-        // Subtract bufferMs to get the server timestamp we should be playing
-        const playTimeMs = playWallMs - this._bufferMs;
-
-        // Fill the buffer from audio stream
+        const buffer = this._freeBuffers.pop() ||
+            this._ctx.createBuffer(this._sampleFormat.channels, this._bufferFrameCount, this._sampleFormat.rate);
+        const playTimeMs = (this._playTime + this._latency) * 1000 - this._bufferMs;
         this._stream.getNextBuffer(buffer, playTimeMs);
 
-        // Schedule playback
         const source = this._ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(this._gainNode);
-        source.onended = () => {
-            // Recycle the buffer
-            this._freeBuffers.push(buffer);
-            // Schedule next
+        const playBuffer = new PlayBuffer(buffer, this._playTime, source, this._gainNode);
+        this._audioBuffers.push(playBuffer);
+        playBuffer.num = ++this._bufferNum;
+        playBuffer.onended = (buf) => {
+            const idx = this._audioBuffers.indexOf(buf);
+            if (idx !== -1) {
+                this._freeBuffers.push(this._audioBuffers.splice(idx, 1)[0].buffer);
+            }
             this._playNext();
         };
-
-        const now = this._ctx.currentTime;
-        if (this._playTime < now) {
-            // We fell behind, reset
-            console.log(`[SnapClient] Playback fell behind by ${((now - this._playTime) * 1000).toFixed(0)}ms, resetting`);
-            this._playTime = now + 0.01;
-        }
-
-        source.start(this._playTime);
-        this._playTime += this._bufferFrameCount / this._sampleRate;
+        playBuffer.start();
+        this._playTime += this._bufferFrameCount / this._sampleFormat.rate;
 
         if (!this._playing) {
             this._playing = true;
             this._notify();
-        }
-    }
-
-    // --- Binary protocol ---
-
-    _onMessage(data) {
-        if (!(data instanceof ArrayBuffer) || data.byteLength < HEADER_SIZE) return;
-
-        const view = new DataView(data);
-        const type = view.getUint16(0, true);
-        const sentSec = view.getInt32(6, true);
-        const sentUsec = view.getInt32(10, true);
-
-        switch (type) {
-            case MSG_CODEC:
-                this._handleCodec(data);
-                break;
-            case MSG_WIRE_CHUNK:
-                this._handleWireChunk(data);
-                break;
-            case MSG_SERVER_SETTINGS:
-                this._handleServerSettings(data);
-                break;
-            case MSG_TIME:
-                this._handleTime(sentSec, sentUsec);
-                break;
-        }
-    }
-
-    _handleCodec(buffer) {
-        const view = new DataView(buffer);
-        const codecSize = view.getUint32(26, true);
-        const codecBytes = new Uint8Array(buffer, 30, codecSize);
-        this._codec = new TextDecoder().decode(codecBytes);
-        console.log('[SnapClient] Codec:', this._codec);
-
-        if (this._codec !== 'pcm') {
-            console.error('[SnapClient] Unsupported codec:', this._codec, '— snapserver must use codec=pcm');
-            return;
-        }
-
-        this._initAudio();
-    }
-
-    _handleWireChunk(buffer) {
-        if (this._codec !== 'pcm') return;
-        if (!this._ctx || !this._stream) {
-            this._initAudio();
-        }
-
-        const view = new DataView(buffer);
-        const chunkSec = view.getInt32(26, true);
-        const chunkUsec = view.getInt32(30, true);
-        const chunkTimestampMs = chunkSec * 1000 + chunkUsec / 1000;
-
-        if (!this._chunkLogCount) this._chunkLogCount = 0;
-        if (this._chunkLogCount < 3) {
-            console.log(`[SnapClient] CHUNK: sec=${chunkSec} usec=${chunkUsec} timestampMs=${chunkTimestampMs.toFixed(0)} Date.now=${Date.now()}`);
-            this._chunkLogCount++;
-        }
-
-        // Decode PCM s16le to Float32
-        const pcmData = new Int16Array(buffer.slice(38));
-        const numSamples = pcmData.length;
-        const numFrames = Math.floor(numSamples / this._channels);
-        if (numFrames === 0) return;
-
-        const channels = [];
-        for (let ch = 0; ch < this._channels; ch++) {
-            const channelData = new Float32Array(numFrames);
-            for (let i = 0; i < numFrames; i++) {
-                channelData[i] = pcmData[i * this._channels + ch] / 32768.0;
-            }
-            channels.push(channelData);
-        }
-
-        const chunk = new PcmChunk(chunkTimestampMs, channels, this._sampleRate);
-        this._stream.addChunk(chunk);
-
-        // Start playback once time sync is ready and we have data
-        if (!this._playing && this._timeProvider.ready) {
-            console.log(`[SnapClient] Time sync ready (${this._timeProvider.syncCount} samples, diff=${this._timeProvider.diffMs.toFixed(1)}ms), starting playback`);
-            this._play();
-        }
-    }
-
-    _handleServerSettings(buffer) {
-        try {
-            const view = new DataView(buffer);
-            const jsonLen = view.getUint32(26, true);
-            const jsonBytes = new Uint8Array(buffer, 30, jsonLen);
-            const json = new TextDecoder().decode(jsonBytes);
-            const settings = JSON.parse(json);
-            if (settings.bufferMs !== undefined) {
-                this._bufferMs = settings.bufferMs;
-                if (this._stream) {
-                    this._stream.bufferMs = this._bufferMs;
-                }
-            }
-            console.log('[SnapClient] Server settings:', settings);
-        } catch (e) {
-            console.warn('[SnapClient] Failed to parse server settings:', e);
-        }
-    }
-
-    _handleTime(sentSec, sentUsec) {
-        // Time sync: compute offset = serverTime - clientTime
-        // sentSec/sentUsec = server's send timestamp (from header)
-        const nowMs = Date.now();
-        const sentMs = sentSec * 1000 + sentUsec / 1000;
-
-        // offset = serverTime - clientTime (positive = server ahead)
-        const offset = sentMs - nowMs;
-
-        if (this._timeProvider.syncCount < 5) {
-            console.log(`[SnapClient] TIME: sentMs=${sentMs.toFixed(0)} nowMs=${nowMs.toFixed(0)} offset=${offset.toFixed(1)}ms`);
-        }
-
-        this._timeProvider.addOffset(offset);
-
-        this._sendTimeResponse(sentSec, sentUsec);
-
-        // Start playback if time sync just became ready
-        if (this._timeProvider.syncCount === MIN_TIME_SYNCS && !this._playing && this._stream && this._stream._chunks && this._stream._chunks.length > 0) {
-            console.log(`[SnapClient] Time sync established, starting playback`);
-            this._play();
-        }
-    }
-
-    // --- Send messages ---
-
-    _sendHello() {
-        const jsonStr = JSON.stringify({
-            MAC: this._id,
-            HostName: 'Browser',
-            Version: '0.27.0',
-            ClientName: 'yt-dlp-web',
-            OS: navigator.platform || 'browser',
-            Arch: 'web',
-            Instance: 1,
-            ID: this._id,
-            SnapStreamProtocolVersion: 2,
-        });
-        const encoded = new TextEncoder().encode(jsonStr);
-
-        const payloadSize = 4 + encoded.length;
-        const buf = new ArrayBuffer(HEADER_SIZE + payloadSize);
-        const view = new DataView(buf);
-
-        const now = Date.now() / 1000;
-        const sec = Math.floor(now);
-        const usec = Math.floor((now - sec) * 1e6);
-
-        view.setUint16(0, MSG_HELLO, true);
-        view.setUint16(2, ++this._msgId, true);
-        view.setUint16(4, 0, true);
-        view.setInt32(6, sec, true);
-        view.setInt32(10, usec, true);
-        view.setInt32(14, 0, true);
-        view.setInt32(18, 0, true);
-        view.setUint32(22, HEADER_SIZE + payloadSize, true);
-
-        view.setUint32(26, encoded.length, true);
-        new Uint8Array(buf, 30).set(encoded);
-
-        this._ws.send(buf);
-        console.log('[SnapClient] Sent Hello, ID:', this._id);
-    }
-
-    _sendTimeRequest() {
-        if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
-
-        const buf = new ArrayBuffer(HEADER_SIZE + 8);
-        const view = new DataView(buf);
-        const now = Date.now() / 1000;
-        const sec = Math.floor(now);
-        const usec = Math.floor((now - sec) * 1e6);
-
-        view.setUint16(0, MSG_TIME, true);
-        view.setUint16(2, ++this._msgId, true);
-        view.setUint16(4, 0, true);
-        view.setInt32(6, sec, true);
-        view.setInt32(10, usec, true);
-        view.setInt32(14, 0, true);
-        view.setInt32(18, 0, true);
-        view.setUint32(22, HEADER_SIZE + 8, true);
-        view.setInt32(26, 0, true);
-        view.setInt32(30, 0, true);
-
-        this._ws.send(buf);
-    }
-
-    _sendTimeResponse(serverSec, serverUsec) {
-        if (!this._ws || this._ws.readyState !== WebSocket.OPEN) return;
-
-        const buf = new ArrayBuffer(HEADER_SIZE + 8);
-        const view = new DataView(buf);
-
-        const now = Date.now() / 1000;
-        const sec = Math.floor(now);
-        const usec = Math.floor((now - sec) * 1e6);
-
-        view.setUint16(0, MSG_TIME, true);
-        view.setUint16(2, ++this._msgId, true);
-        view.setUint16(4, 0, true);
-        view.setInt32(6, sec, true);
-        view.setInt32(10, usec, true);
-        view.setInt32(14, serverSec, true);
-        view.setInt32(18, serverUsec, true);
-        view.setUint32(22, HEADER_SIZE + 8, true);
-
-        view.setInt32(26, 0, true);
-        view.setInt32(30, 0, true);
-
-        this._ws.send(buf);
-    }
-
-    // --- Time sync ---
-
-    _startTimeSync() {
-        this._timeSyncInterval = setInterval(() => {
-            this._sendTimeRequest();
-        }, 1000);
-    }
-
-    _stopTimeSync() {
-        if (this._timeSyncInterval) {
-            clearInterval(this._timeSyncInterval);
-            this._timeSyncInterval = null;
         }
     }
 }
