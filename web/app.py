@@ -529,15 +529,12 @@ async def remove_download(job_id: str, delete_file: bool = Query(False)):
 
 @app.get('/files/{filename:path}')
 async def serve_file(filename: str):
-    # Security: prevent path traversal
-    if '..' in filename or filename.startswith('/'):
-        raise HTTPException(status_code=400, detail='Invalid filename')
-
+    # Security: prevent path traversal (realpath check is sufficient)
     filepath = os.path.join(DOWNLOAD_DIR, filename)
-    abs_path = os.path.abspath(filepath)
-    abs_dir = os.path.abspath(DOWNLOAD_DIR)
+    abs_path = os.path.realpath(filepath)
+    abs_dir = os.path.realpath(DOWNLOAD_DIR)
 
-    if not abs_path.startswith(abs_dir):
+    if not abs_path.startswith(abs_dir + os.sep) and abs_path != abs_dir:
         raise HTTPException(status_code=400, detail='Invalid filename')
 
     if not os.path.exists(abs_path):
