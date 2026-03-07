@@ -934,14 +934,15 @@ function renderHistory(items, append) {
                 ${playBtn}
                 <button class="${pinClass}" onclick="togglePin('${item.id}')" title="${pinTitle}">&#9733;</button>
                 ${downloadBtn}
-                <button class="delete-btn" onclick="deleteJob('${item.id}')">Delete</button>
+                <button class="delete-btn" onclick="deleteJob('${item.id}', '${item.status}')">Delete</button>
             </span>
         `;
         list.appendChild(el);
     }
 }
 
-async function deleteJob(jobId) {
+async function deleteJob(jobId, status) {
+    if (status !== 'error' && !confirm('Delete this file?')) return;
     try {
         await fetch(`/api/downloads/${jobId}?delete_file=true`, { method: 'DELETE' });
         const el = $(`hist-${jobId}`);
@@ -1066,7 +1067,7 @@ function renderLibrary(append, newItems) {
             <span class="lib-actions">
                 <button class="play-single-btn" data-play='${JSON.stringify({title: item.title || 'Untitled', file_name: item.file_name, duration: item.duration}).replace(/'/g, '&#39;')}' onclick="playSingleFile(JSON.parse(this.dataset.play))" title="Play">&#9654;</button>
                 ${downloadBtn}
-                <button class="delete-btn" onclick="deleteJob('${item.id}')" style="border-color:var(--error);color:var(--error)">Del</button>
+                <button class="delete-btn" onclick="deleteJob('${item.id}', '${item.status}')" style="border-color:var(--error);color:var(--error)">Del</button>
             </span>
         `;
         list.appendChild(el);
